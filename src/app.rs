@@ -1229,7 +1229,21 @@ fn obstacles_sync(obstacles: Res<Obstacles>) {
 }
 
 pub fn build(app: &mut App) {
-    app.add_plugins(DefaultPlugins.set(WindowPlugin {
+    // Mesa's llvmpipe (26.x) advertises VK_KHR_cooperative_matrix but its ICD
+    // rejects it at vkCreateDevice; wgpu's `Functionality` priority would request
+    // the experimental feature and panic. The game never uses cooperative
+    // matrices, so disable it unconditionally for driver robustness.
+    app.add_plugins(DefaultPlugins.set(bevy::render::RenderPlugin {
+        render_creation: bevy::render::settings::RenderCreation::Automatic(Box::new(
+            bevy::render::settings::WgpuSettings {
+                disabled_features: Some(
+                    bevy::render::settings::WgpuFeatures::EXPERIMENTAL_COOPERATIVE_MATRIX,
+                ),
+                ..default()
+            },
+        )),
+        ..default()
+    }).set(WindowPlugin {
         primary_window: Some(Window {
             title: "DREAM MALL".into(),
             resolution: (1600, 900).into(),
