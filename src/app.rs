@@ -9,9 +9,7 @@ use bevy::image::ImageSampler;
 use bevy::input::mouse::MouseMotion;
 use bevy::pbr::{DistanceFog, FogFalloff};
 use bevy::prelude::*;
-use bevy::camera::visibility::VisibleEntities;
 use bevy::ui::FocusPolicy;
-use bevy::ui::ComputedUiTargetCamera;
 use bevy::ui_widgets::{Activate, Button};
 use bevy::window::{CursorGrabMode, CursorOptions, PrimaryWindow};
 use dreammall::game::*;
@@ -377,6 +375,25 @@ fn spawn_ui_root(commands: &mut Commands, images: &mut ResMut<Assets<Image>>) {
                 },
                 TextColor(Color::srgba(1.0, 0.85, 0.95, 0.9)),
             ));
+            // controls hint (bottom left, dim)
+            ui.spawn((
+                Node {
+                    position_type: PositionType::Absolute,
+                    bottom: Val::Px(16.0),
+                    left: Val::Px(18.0),
+                    ..default()
+                },
+                FocusPolicy::Pass,
+                GlobalZIndex(41),
+            ))
+            .with_child((
+                Text::new("W forward   A/D strafe   turn: mouse (click to grab) or Left/Right arrows   E interact"),
+                TextFont {
+                    font_size: FontSize::Px(15.0),
+                    ..default()
+                },
+                TextColor(Color::srgba(1.0, 0.9, 0.97, 0.35)),
+            ));
         });
 }
 
@@ -402,13 +419,6 @@ fn build_pending(
     // Player is NOT a child of WorldRoot, so it survives world respawn.
     // boundary between sections: the ring midline is clear of center props (fountains sit at section centers)
     let (sx, sz) = arc_point(0.0, R_MID);
-    let (sx, sz) = match std::env::var("DREAMMALL_SPAWN") {
-        Ok(s) => {
-            let mut it = s.split(',');
-            (it.next().unwrap().parse().unwrap(), it.next().unwrap().parse().unwrap())
-        }
-        Err(_) => (sx, sz),
-    };
     let start = Transform::from_xyz(sx, EYE_H, sz);
     match players.single_mut() {
         Ok(mut ptf) => *ptf = start,
@@ -434,10 +444,6 @@ fn build_pending(
     // spawn at angle 0 facing the forward tangent (tangent at 0 = +X = heading 90)
     r.theta_prev = 0.0;
     r.heading = 90.0;
-    if std::env::var("DREAMMALL_PASS").is_ok() {
-        r.pass = 1;
-        r.mutate_flag = true;
-    }
     commands.insert_resource(r);
     *LAP.lock().unwrap() = 0.0;
     world::build_world(
@@ -481,13 +487,19 @@ fn player_input(
     } else {
         mraw.clear();
     }
+    // arrow-key turn fallback so control never depends on pointer grab
+    if run.mode == Mode::Walking {
+        if keys.pressed(KeyCode::ArrowLeft) {
+            run.heading -= 100.0 * dt;
+        }
+        if keys.pressed(KeyCode::ArrowRight) {
+            run.heading += 100.0 * dt;
+        }
+    }
     run.heading += dx * 0.12;
     run.pitch = (run.pitch - dy * 0.12).clamp(-85.0, 85.0);
 
     let Ok(mut tf) = q.single_mut() else { return };
-    if (run.clock * 2.0) as u32 != ((run.clock - dt) * 2.0) as u32 {
-        eprintln!("DMDBG pos {:.2},{:.2} y{:.2} h{:.1} penny{} mode{:?}", tf.translation.x, tf.translation.z, tf.translation.y, run.heading, run.has_penny, run.mode);
-    }
 
     if run.mode == Mode::Walking {
         let mut fwd = 0.0f32;
@@ -496,10 +508,10 @@ fn player_input(
             fwd += 1.0;
         }
         // NOTE: no backward walking, ever. ArrowDown is deliberately unwired.
-        if keys.pressed(KeyCode::KeyA) || keys.pressed(KeyCode::ArrowLeft) {
+        if keys.pressed(KeyCode::KeyA) {
             strafe -= 1.0;
         }
-        if keys.pressed(KeyCode::KeyD) || keys.pressed(KeyCode::ArrowRight) {
+        if keys.pressed(KeyCode::KeyD) {
             strafe += 1.0;
         }
         let moving = fwd != 0.0 || strafe != 0.0;
@@ -689,10 +701,6 @@ fn interactions(
     let ppos = ptf.translation;
     run.prompt = None;
     let press_e = keys.just_pressed(KeyCode::KeyE);
-    if press_e {
-        let dp: Vec<f32> = penny.iter().map(|(_, t)| t.translation().distance(ptf.translation)).collect();
-        eprintln!("DMDBG E-PRESS has_penny{} dists{:?}", run.has_penny, dp);
-    }
 
     // penny pickup / throw
     if !run.has_penny {
@@ -701,7 +709,6 @@ fn interactions(
             if d < 2.2 {
                 run.prompt = Some("PICK UP THE PENNY  [E]".into());
                 if press_e {
-                    eprintln!("DMDBG PICKUP at {:.2},{:.2}", ppos.x, ppos.z);
                     run.has_penny = true;
                     commands.entity(e).despawn();
                     commands.spawn((
@@ -721,7 +728,6 @@ fn interactions(
             if d < 4.0 && ppos.y < 2.5 {
                 run.prompt = Some("THROW THE PENNY  [E]".into());
                 if press_e {
-                    eprintln!("DMDBG THROW at {:.2},{:.2} d{:.2}", ppos.x, ppos.z, d);
                     run.has_penny = false;
                     commands.spawn((
                         AudioPlayer(sfx.throw_.clone()),
@@ -809,7 +815,6 @@ fn trigger_win(run: &mut Run, kind: WinKind, sfx: &Sfx) {
     if run.won.is_some() {
         return;
     }
-    eprintln!("DMDBG VICTORY {:?}", kind);
     run.won = Some(kind);
     run.won_timer = 0.0;
     commands_spawn_chime(sfx);
@@ -837,13 +842,11 @@ fn win_fade(
     if run.won.is_none() && run.fade > 0.0 {
         run.fade = (run.fade - dt / 1.2).max(0.0);
     }
-    if let Some(kind) = run.won {
+    if run.won.is_some() {
         run.won_timer += dt;
         run.fade = (run.won_timer / 1.5).min(1.0);
         if run.won_timer > 1.5 && *gs.get() == GS::Dreaming {
             run.fade = 1.0;
-            let _ = kind;
-            eprintln!("DMDBG ->ENDED gs{:?}", gs.get());
             next.set(GS::Ended);
         }
     }
@@ -1074,9 +1077,8 @@ fn spawn_loop(commands: &mut Commands, music: &Music, vol: f32) -> Entity {
 fn spawn_ending_ui(
     mut commands: Commands,
     run: Res<Run>,
-    winent: ResMut<WinShown>,
+    winent: Res<WinShown>,
 ) {
-    eprintln!("DMDBG spawn_ending_ui winent{:?}", winent.0);
     let msg = match winent.0 {
         Some(WinKind::Water) => "THE WATER TAKES YOU DOWN, WARM AND SWEET.\nYOU WAKE UP, CONGRATULATIONS.",
         Some(WinKind::Flight) => "YOU RISE THROUGH THE GLASS ROOF.\nTHE PARKING LOT IS AN OCEAN OF MIST.\nYOU WAKE UP, CONGRATULATIONS.",
@@ -1094,10 +1096,9 @@ fn spawn_ending_ui(
                 row_gap: Val::Px(28.0),
                 ..default()
             },
-            BackgroundColor(Color::srgba(1.0, 0.0, 0.0, 1.0)),
+            BackgroundColor(Color::srgba(0.02, 0.0, 0.05, 0.94)),
             GlobalZIndex(50),
             DespawnOnExit(GS::Ended),
-            DbgEnd,
         ))
         .with_children(|ui| {
             ui.spawn((
@@ -1106,7 +1107,7 @@ fn spawn_ending_ui(
                     font_size: FontSize::Px(34.0),
                     ..default()
                 },
-                TextColor(Color::srgb(0.0, 1.0, 0.0)),
+                TextColor(Color::srgb(1.0, 0.85, 0.95)),
                 TextLayout {
                     justify: Justify::Center,
                     linebreak: LineBreak::WordBoundary,
@@ -1268,47 +1269,7 @@ pub fn build(app: &mut App) {
     app.add_observer(exit_btn);
     // ending screen: Escape quits
     app.add_systems(Update, exit_on_escape.run_if(in_state(GS::Ended)));
-    app.add_systems(Update, dbg_end.run_if(in_state(GS::Ended)));
-    app.add_systems(Update, dbg_dream.run_if(in_state(GS::Dreaming)));
-    app.add_systems(Update, force_end.run_if(in_state(GS::Dreaming)));
-    // DREAMMALL_SHOT=/path.png[:SECONDS] -> GPU-side swapchain capture (bypasses X capture)
-    if let Ok(spec) = std::env::var("DREAMMALL_SHOT") {
-        let (path, secs) = match spec.split_once(':') {
-            Some((p, s)) => (p.to_string(), s.parse::<f32>().unwrap_or(6.0)),
-            None => (spec.clone(), 6.0),
-        };
-        app.add_observer(bevy::render::view::window::screenshot::save_to_disk(path.clone()));
-        app.insert_resource(ShotReq { secs, done: false });
-        app.add_systems(Update, shot_system);
-    }
 }
-
-#[derive(Resource)]
-struct ShotReq {
-    secs: f32,
-    done: bool,
-}
-
-fn shot_system(
-    time: Res<Time>,
-    mut req: ResMut<ShotReq>,
-    mut commands: Commands,
-) {
-    if !req.done && time.elapsed_secs() >= req.secs {
-        req.done = true;
-        commands.spawn(bevy::render::view::window::screenshot::Screenshot::primary_window());
-    }
-}
-
-fn force_end(time: Res<Time>, gs: Res<State<GS>>, mut next: ResMut<NextState<GS>>) {
-    if std::env::var("DREAMMALL_END").is_ok()
-        && *gs.get() == GS::Dreaming
-        && time.elapsed_secs() > 3.0
-    {
-        next.set(GS::Ended);
-    }
-}
-
 
 fn exit_on_escape(keys: Res<ButtonInput<KeyCode>>, mut writer: MessageWriter<AppExit>) {
     if keys.just_pressed(KeyCode::Escape) {
@@ -1316,43 +1277,6 @@ fn exit_on_escape(keys: Res<ButtonInput<KeyCode>>, mut writer: MessageWriter<App
     }
 }
 
-#[derive(Component)]
-struct DbgEnd;
-fn dbg_end(
-    time: Res<Time>,
-    roots: Query<(Entity, &ComputedNode, &ViewVisibility, &InheritedVisibility, Option<&ComputedUiTargetCamera>), With<DbgEnd>>,
-    kids: Query<(Entity, &ChildOf, &ComputedNode, &ViewVisibility), (Without<DbgEnd>, With<Text>)>,
-    cams: Query<Entity, With<Camera3d>>,
-    vents: Query<&VisibleEntities>,
-) {
-    if ((time.elapsed_secs() * 1.0) as u32 % 3) != 0 {
-        return;
-    }
-    for (e, cn, vv, iv, ct) in &roots {
-        eprintln!("DMDBG ENDROOT live {:?} size{:?} vis{:?} inh{:?} cam{:?}", e, cn.size(), vv.get(), iv.get(), ct.map(|c| c.get()));
-    }
-    for c in &cams {
-        eprintln!("DMDBG CAM {:?} vents{:?}", c, vents.get(c).map(|v| v.entities.len()).unwrap_or(999));
-    }
-    for (e, p, cn, vv) in &kids {
-        eprintln!("DMDBG TXT {:?} parent{:?} size{:?} vis{:?}", e, p, cn.size(), vv.get());
-    }
-}
-
-fn dbg_dream(time: Res<Time>, ui: Query<&ViewVisibility, (With<Node>, Without<Camera3d>)>) {
-    if ((time.elapsed_secs() * 1.0) as u32 % 3) != 0 {
-        return;
-    }
-    let mut n = 0;
-    let mut vis = 0;
-    for v in &ui {
-        n += 1;
-        if v.get() {
-            vis += 1;
-        }
-    }
-    eprintln!("DMDBG DREAMUI {} nodes vis {}", n, vis);
-}
 
 fn capture_win2(mut w: ResMut<WinShown>, run: Res<Run>) {
     w.0 = run.won;

@@ -18,6 +18,7 @@ bevy = { version = "0.20", default-features = false, features = [
   "bevy_pbr",
   "bevy_sprite",
   "bevy_ui",
+  "bevy_ui_render",
   "bevy_text",
   "bevy_audio",
   "wav",
