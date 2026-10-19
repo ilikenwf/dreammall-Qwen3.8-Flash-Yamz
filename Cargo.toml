@@ -1,0 +1,46 @@
+[package]
+name = "dreammall"
+version = "0.1.0"
+edition = "2021"
+
+[lib]
+name = "dreammall"
+path = "src/lib.rs"
+
+[dependencies]
+bevy = { version = "0.20", default-features = false, features = [
+  "x11",
+  "wayland",
+  "bevy_render",
+  "bevy_pbr",
+  "bevy_sprite",
+  "bevy_ui",
+  "bevy_text",
+  "bevy_audio",
+  "wav",
+  "bevy_window",
+  "bevy_winit",
+  "multi_threaded",
+  "bevy_state",
+  "bevy_gilrs",
+  "bevy_picking",
+  "ui_picking",
+  "bevy_ui_widgets",
+  "default_font",
+] }
+image = { version = "0.25", default-features = false, features = ["png"] }
+half = "2"
+
+[profile.dev]
+opt-level = 1
+
+[profile.dev.package."*"]
+opt-level = 3
+
+[[bin]]
+name = "dreammall"
+path = "src/main.rs"
+
+[[bin]]
+name = "simcheck"
+path = "src/bin/simcheck.rs"

@@ -1,0 +1,520 @@
+//! Procedural texture generation: pure RGBA byte buffers (no bevy, no file IO).
+//! The binary uploads these as Images. Textures drawn with the game::font.
+
+use crate::game::{band, fhash, text_to_pixels};
+
+pub type Rgba = Vec<u8>;
+
+fn put(buf: &mut Rgba, w: u32, x: u32, y: u32, c: [u8; 4]) {
+    let i = ((y * w + x) * 4) as usize;
+    buf[i] = c[0];
+    buf[i + 1] = c[1];
+    buf[i + 2] = c[2];
+    buf[i + 3] = c[3];
+}
+
+fn blend(buf: &mut Rgba, w: u32, x: u32, y: u32, c: [u8; 4]) {
+    let i = ((y * w + x) * 4) as usize;
+    let a = c[3] as u32;
+    buf[i] = ((c[0] as u32 * a + buf[i] as u32 * (255 - a)) / 255) as u8;
+    buf[i + 1] = ((c[1] as u32 * a + buf[i + 1] as u32 * (255 - a)) / 255) as u8;
+    buf[i + 2] = ((c[2] as u32 * a + buf[i + 2] as u32 * (255 - a)) / 255) as u8;
+    buf[i + 3] = 255;
+}
+
+fn new_buf(w: u32, h: u32, c: [u8; 4]) -> Rgba {
+    let mut b = vec![0u8; (w * h * 4) as usize];
+    for px in b.chunks_exact_mut(4) {
+        px.copy_from_slice(&c);
+    }
+    b
+}
+
+// ---- checkerboard floor: pink/cream marble ----
+pub fn floor_tile(seed: u64) -> Rgba {
+    let w = 256u32;
+    let h = 256u32;
+    let mut b = new_buf(w, h, [255, 255, 255, 255]);
+    for y in 0..h {
+        for x in 0..w {
+            let cell = ((x / 128) + (y / 128)) % 2;
+            let base: [f32; 3] = if cell == 0 {
+                [235.0, 195.0, 205.0] // pink
+            } else {
+                [240.0, 232.0, 215.0] // cream
+            };
+            // marble veining
+            let v = band(x as f32 * 0.05 + y as f32 * 0.02, seed + (cell as u64) * 77)
+                + 0.5 * band(x as f32 * 0.11 - y as f32 * 0.07, seed + 999 + cell as u64);
+            let v = (v - 0.75).max(0.0) * 60.0;
+            let n = fhash(seed + (y * w + x) as u64, 3) * 14.0 - 7.0;
+            let g = 215.0 + fhash(seed + (y * w + x) as u64, 5) * 18.0;
+            let c = [
+                (base[0] - v + n).clamp(0.0, 255.0) as u8,
+                (base[1] - v + n).clamp(0.0, 255.0) as u8,
+                (base[2] - v * 0.8 + n).clamp(0.0, 255.0) as u8,
+                g as u8,
+            ];
+            put(&mut b, w, x, y, [c[0], c[1], c[2], 255]);
+        }
+    }
+    // grout lines
+    for y in 0..h {
+        for x in 0..w {
+            if x % 128 < 2 || y % 128 < 2 {
+                let sh = 0.82 + fhash(seed + (y * w + x) as u64, 11) * 0.08;
+                put(
+                    &mut b,
+                    w,
+                    x,
+                    y,
+                    [(170.0 * sh) as u8, (160.0 * sh) as u8, (155.0 * sh) as u8, 255],
+                );
+            }
+        }
+    }
+    b
+}
+
+// ---- wall panels: pastel tile with wainscot line ----
+pub fn wall_tile(seed: u64, hue_shift: f32) -> Rgba {
+    let w = 256u32;
+    let h = 256u32;
+    let mut b = new_buf(w, h, [255, 255, 255, 255]);
+    let top = hsv(hue_shift, 0.14, 0.92);
+    let bot = hsv(hue_shift + 0.03, 0.22, 0.72);
+    for y in 0..h {
+        for x in 0..w {
+            let t = y as f32 / h as f32;
+            let mut c = [
+                top[0] as f32 * (1.0 - t) + bot[0] as f32 * t,
+                top[1] as f32 * (1.0 - t) + bot[1] as f32 * t,
+                top[2] as f32 * (1.0 - t) + bot[2] as f32 * t,
+            ];
+            // vertical panel seams
+            if x % 64 < 2 {
+                c[0] *= 0.88;
+                c[1] *= 0.88;
+                c[2] *= 0.88;
+            }
+            // wainscot rail at y=170
+            let dy = y.abs_diff(170);
+            if dy < 3 {
+                let s = 1.06f32.min(1.0 + (3 - dy) as f32 * 0.04);
+                c[0] *= s;
+                c[1] *= s;
+                c[2] *= s;
+            }
+            let n = fhash(seed + (y * w + x) as u64, 13) * 10.0 - 5.0;
+            put(
+                &mut b,
+                w,
+                x,
+                y,
+                [
+                    (c[0] + n).clamp(0.0, 255.0) as u8,
+                    (c[1] + n).clamp(0.0, 255.0) as u8,
+                    (c[2] + n).clamp(0.0, 255.0) as u8,
+                    255,
+                ],
+            );
+        }
+    }
+    b
+}
+
+// ---- ceiling: light grid tiles ----
+pub fn ceil_tile(seed: u64) -> Rgba {
+    let w = 256u32;
+    let h = 256u32;
+    let mut b = new_buf(w, h, [246, 240, 244, 255]);
+    for y in 0..h {
+        for x in 0..w {
+            let seam = x % 128 < 3 || y % 128 < 3;
+            let n = fhash(seed + (y * w + x) as u64, 17) * 12.0 - 6.0;
+            let v = if seam { 190.0 } else { 244.0 };
+            let c = (v + n).clamp(0.0, 255.0) as u8;
+            put(&mut b, w, x, y, [c, (c as f32 * 0.98) as u8, (c as f32 * 1.0) as u8, 255]);
+        }
+    }
+    b
+}
+
+// ---- storefront window: vaporwave sunset (also used on mirror material) ----
+pub fn sunset(seed: u64) -> Rgba {
+    let w = 256u32;
+    let h = 256u32;
+    let mut b = new_buf(w, h, [0, 0, 0, 255]);
+    let horizon = h as f32 * 0.62;
+    // sun bands
+    let cx = w as f32 * 0.5;
+    let cy = horizon - 34.0;
+    let r = 46.0f32;
+    for y in 0..h {
+        for x in 0..w {
+            let t = y as f32 / h as f32;
+            let c = if y as f32 < horizon {
+                // sky: deep purple -> magenta -> orange at horizon
+                let k = (y as f32 / horizon).powi(2);
+                let r0 = 30.0 + 225.0 * k;
+                let g0 = 10.0 + 110.0 * k;
+                let b0 = 90.0 + 70.0 * (1.0 - k);
+                let flick = 1.0 + 0.03 * band(y as f32 * 0.35, seed);
+                [
+                    (r0 * flick).clamp(0.0, 255.0) as u8,
+                    (g0 * flick).clamp(0.0, 255.0) as u8,
+                    (b0 * flick).clamp(0.0, 255.0) as u8,
+                    255,
+                ]
+            } else {
+                // ground: retro grid, dark magenta base
+                let k = ((y as f32 - horizon) / (h as f32 - horizon)).powi(2);
+                let r0 = 60.0 + 120.0 * k;
+                let g0 = 10.0 + 30.0 * k;
+                let b0 = 90.0 + 40.0 * k;
+                [r0 as u8, g0 as u8, b0 as u8, 255]
+            };
+            put(&mut b, w, x, y, c);
+        }
+    }
+    // sun disc with horizontal slice bands
+    for y in (horizon as u32 - r as u32 - 4.0).max(0)..=(horizon as u32).min(h - 1) {
+        for x in 0..w {
+            let dx = x as f32 - cx;
+            let dy = y as f32 - cy;
+            let d = (dx * dx + dy * dy).sqrt();
+            if d < r {
+                let band_ok = (cy - y) as f32 % 9.0 > 3.5; // slice gaps lower half
+                if band_ok {
+                    let k = 1.0 - (cy - y) / r;
+                    put(
+                        &mut b,
+                        w,
+                        x,
+                        y,
+                        [255, (170.0 - 110.0 * k) as u8, (90.0 - 60.0 * k) as u8, 255],
+                    );
+                }
+            }
+        }
+    }
+    // grid lines on ground
+    for y in (horizon as u32 + 1)..h {
+        let gy = (y as f32 - horizon) / (h as f32 - horizon);
+        let period = 4.0 + gy * 26.0;
+        if ((y as f32 - horizon) % period) < 1.6 {
+            for x in 0..w {
+                blend(&mut b, w, x, y, [255, 90, 220, 190]);
+            }
+        }
+    }
+    for x in 0..w {
+        let fx = x as f32 / w as f32 - 0.5;
+        for y in (horizon as u32 + 1)..h {
+            let gyy = (y as f32 - horizon) / (h as f32 - horizon);
+            let px = fx / (0.06 + gyy * 0.94);
+            if (px * 10.0).fract().abs() < 0.045 {
+                blend(&mut b, w, x, y, [255, 90, 220, 150]);
+            }
+        }
+    }
+    // horizon glow line
+    for x in 0..w {
+        blend(&mut b, w, x, horizon as u32, [255, 230, 255, 230]);
+    }
+    let _ = t_unused();
+    b
+}
+
+fn t_unused() -> f32 {
+    0.0
+}
+
+// ---- ad poster: gradient + slogan ----
+pub fn ad_poster(seed: u64, name: &str, slogan: &str) -> Rgba {
+    let w = 256u32;
+    let h = 256u32;
+    let mut b = new_buf(w, h, [0, 0, 0, 255]);
+    let h0 = fhash(seed, 31);
+    for y in 0..h {
+        let t = y as f32 / h as f32;
+        let c = hsv(h0 + 0.12 * t, 0.55 - 0.2 * t, 0.95 - 0.25 * t);
+        for x in 0..w {
+            put(&mut b, w, x, y, [c[0], c[1], c[2], 255]);
+        }
+    }
+    // sun circle deco
+    let cx = w as f32 / 2.0;
+    let cy = h as f32 * 0.30;
+    for y in 0..h {
+        for x in 0..w {
+            let dx = x as f32 - cx;
+            let dy = y as f32 - cy;
+            let d = (dx * dx + dy * dy).sqrt();
+            if d < 40.0 && (cy - y) % 7.0 > 2.5 {
+                put(&mut b, w, x, y, [255, 220, 120, 255]);
+            }
+        }
+    }
+    let mut tmp = vec![0u8; (w * h * 4) as usize];
+    // name band
+    for y in (96..132) {
+        for x in 0..w {
+            put(&mut b, w, x, y, [12, 6, 24, 255]);
+        }
+    }
+    text_to_pixels(name, 2, [255, 120, 220], [12, 6, 24, 255], w, 36, &mut tmp[..(w * 36 * 4) as usize]);
+    blit_band(&mut b, w, &tmp, w, 36, 96);
+    text_to_pixels(slogan, 2, [140, 230, 255], [0, 0, 0, 0], w, 30, &mut tmp[..(w * 30 * 4) as usize]);
+    blit_band_alpha(&mut b, w, &tmp, w, 30, 150);
+    b
+}
+
+fn blit_band(dst: &mut Rgba, w: u32, src: &Rgba, sw: u32, sh: u32, y0: u32) {
+    for y in 0..sh {
+        for x in 0..sw {
+            let i = ((y * sw + x) * 4) as usize;
+            let j = (((y0 + y) * w + x) * 4) as usize;
+            dst[j..j + 4].copy_from_slice(&src[i..i + 4]);
+        }
+    }
+}
+
+fn blit_band_alpha(dst: &mut Rgba, w: u32, src: &Rgba, sw: u32, sh: u32, y0: u32) {
+    for y in 0..sh {
+        for x in 0..sw {
+            let i = ((y * sw + x) * 4) as usize;
+            if src[i + 3] == 0 {
+                continue;
+            }
+            let j = (((y0 + y) * w + x) * 4) as usize;
+            dst[j..j + 4].copy_from_slice(&src[i..i + 4]);
+        }
+    }
+}
+
+// ---- store sign: name on dark slab ----
+pub fn sign_tex(seed: u64, name: &str) -> Rgba {
+    let w = 256u32;
+    let h = 64u32;
+    let mut b = new_buf(w, h, [10, 6, 20, 255]);
+    let h0 = fhash(seed, 41);
+    let c = hsv(h0, 0.5, 1.0);
+    // border
+    for x in 0..w {
+        for y in 0..h {
+            if x < 3 || y < 3 || x >= w - 3 || y >= h - 3 {
+                put(&mut b, w, x, y, [c[0], c[1], c[2], 255]);
+            }
+        }
+    }
+    let scale = if name.len() > 13 { 2 } else { 3 };
+    text_to_pixels(name, scale, [255, 255, 255], [10, 6, 20], w, h, &mut b);
+    b
+}
+
+// ---- brick (fountain / planter) ----
+pub fn brick(seed: u64) -> Rgba {
+    let w = 256u32;
+    let h = 256u32;
+    let mut b = new_buf(w, h, [210, 170, 160, 255]);
+    let bh = 16u32;
+    let bw = 32u32;
+    for y in 0..h {
+        let row = y / bh;
+        let off = if row % 2 == 0 { 0 } else { bw / 2 };
+        for x in 0..w {
+            let mortar = (y % bh) < 2 || ((x + off) % bw) < 2;
+            let n = fhash(seed + (y * w + x) as u64, 23) * 24.0 - 12.0;
+            let c = if mortar {
+                [
+                    (228.0 + n * 0.4) as u8,
+                    (222.0 + n * 0.4) as u8,
+                    (214.0 + n * 0.4) as u8,
+                    255,
+                ]
+            } else {
+                let tint = fhash(seed + ((y / bh) * 31 + (x + off) / bw) as u64, 29);
+                [
+                    (196.0 + tint * 40.0 + n) as u8,
+                    (140.0 + tint * 40.0 + n) as u8,
+                    (130.0 + tint * 30.0 + n) as u8,
+                    255,
+                ]
+            };
+            put(&mut b, w, x, y, c);
+        }
+    }
+    b
+}
+
+// ---- nyancat: 120x40 pixel sprite + rainbow trail (RGBA, transparent elsewhere) ----
+pub fn nyancat() -> Rgba {
+    let w = 120u32;
+    let h = 40u32;
+    let mut b = new_buf(w, h, [0, 0, 0, 0]);
+    // rainbow trail: 6 horizontal bands scrolling (static image; scroll via UV anim)
+    let bands = [
+        [255u8, 60, 60],
+        [255, 160, 60],
+        [255, 240, 90],
+        [110, 230, 110],
+        [90, 170, 255],
+        [190, 110, 255],
+    ];
+    for (bi, bc) in bands.iter().enumerate() {
+        let y0 = 8 + (bi as u32) * 4;
+        for y in y0..y0 + 4 {
+            for x in 0..64u32 {
+                put(&mut b, w, x, y, [bc[0], bc[1], bc[2], 255]);
+            }
+        }
+    }
+    // cat body (pop-tart) at x 56..104, y 6..34
+    for y in 6..34u32 {
+        for x in 56..104u32 {
+            let edge = x < 60 || x > 99 || y < 10 || y > 29;
+            let c = if edge { [40u8, 28, 22] } else { [250, 176, 96] }; // frosting-ish tan
+            put(&mut b, w, x, y, [c[0], c[1], c[2], 255]);
+        }
+    }
+    // pink frosting inner
+    for y in 12..28u32 {
+        for x in 62..98u32 {
+            put(&mut b, w, x, y, [255, 160, 190, 255]);
+        }
+    }
+    // face: white muzzle
+    for y in 18..26u32 {
+        for x in 70..90u32 {
+            put(&mut b, w, x, y, [255, 250, 250, 255]);
+        }
+    }
+    // eyes
+    for y in 14..18u32 {
+        for x in [72u32, 84] {
+            for dx in 0..3u32 {
+                put(&mut b, w, x + dx, y, [20, 20, 30, 255]);
+            }
+        }
+    }
+    // mouth
+    for x in 76..82u32 {
+        put(&mut b, w, x, 22, [220, 60, 90, 255]);
+    }
+    // ears
+    for y in 2..6u32 {
+        for x in 58..66u32 {
+            put(&mut b, w, x, y, [40, 28, 22, 255]);
+        }
+        for x in 94..102u32 {
+            put(&mut b, w, x, y, [40, 28, 22, 255]);
+        }
+    }
+    // legs
+    for y in 34..38u32 {
+        for x in [62u32, 74, 86, 96] {
+            for dx in 0..5u32 {
+                put(&mut b, w, x + dx, y, [40, 28, 22, 255]);
+            }
+        }
+    }
+    b
+}
+
+// ---- radial vignette: transparent center -> dark edges (UI overlay) ----
+pub fn vignette() -> Rgba {
+    let w = 256u32;
+    let h = 256u32;
+    let mut b = new_buf(w, h, [0, 0, 0, 0]);
+    for y in 0..h {
+        for x in 0..w {
+            let dx = (x as f32 - w as f32 / 2.0) / (w as f32 / 2.0);
+            let dy = (y as f32 - h as f32 / 2.0) / (h as f32 / 2.0);
+            let d = (dx * dx + dy * dy).sqrt();
+            let a = ((d - 0.55) / 0.65).clamp(0.0, 1.0);
+            put(&mut b, w, x, y, [10, 4, 18, (a * a * 200.0) as u8]);
+        }
+    }
+    b
+}
+
+// ---- water: teal ripple ----
+pub fn water(seed: u64) -> Rgba {
+    let w = 128u32;
+    let h = 128u32;
+    let mut b = new_buf(w, h, [0, 0, 0, 255]);
+    for y in 0..h {
+        for x in 0..w {
+            let r = (((x as f32 - 64.0).powi(2) + (y as f32 - 64.0).powi(2)).sqrt()) / 64.0;
+            let rip = 0.5 + 0.5 * (r * 18.0 + band(x as f32 * 0.1, seed) * 2.0).sin();
+            let n = fhash(seed + (y * w + x) as u64, 37) * 10.0;
+            put(
+                &mut b,
+                w,
+                x,
+                y,
+                [
+                    (40.0 + 60.0 * rip + n) as u8,
+                    (150.0 + 60.0 * rip + n) as u8,
+                    (170.0 + 60.0 * rip + n) as u8,
+                    255,
+                ],
+            );
+        }
+    }
+    b
+}
+
+pub fn hsv(h: f32, s: f32, v: f32) -> [u8; 3] {
+    let h = (h - h.floor()) * 6.0;
+    let i = h.floor();
+    let f = h - i;
+    let p = v * (1.0 - s);
+    let q = v * (1.0 - s * f);
+    let t = v * (1.0 - s * (1.0 - f));
+    let (r, g, b) = match i as u32 {
+        0 => (v, t, p),
+        1 => (q, v, p),
+        2 => (p, v, t),
+        3 => (p, q, v),
+        4 => (t, p, v),
+        _ => (v, p, q),
+    };
+    [(r * 255.0) as u8, (g * 255.0) as u8, (b * 255.0) as u8]
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn buffers_sized() {
+        assert_eq!(floor_tile(1).len(), 256 * 256 * 4);
+        assert_eq!(wall_tile(1, 0.9).len(), 256 * 256 * 4);
+        assert_eq!(ceil_tile(1).len(), 256 * 256 * 4);
+        assert_eq!(sunset(1).len(), 256 * 256 * 4);
+        assert_eq!(ad_poster(1, "MOON MART", "WALK ON").len(), 256 * 256 * 4);
+        assert_eq!(sign_tex(1, "MOON MART").len(), 256 * 64 * 4);
+        assert_eq!(brick(1).len(), 256 * 256 * 4);
+        assert_eq!(nyancat().len(), 120 * 40 * 4);
+        assert_eq!(vignette().len(), 256 * 256 * 4);
+        assert_eq!(water(1).len(), 128 * 128 * 4);
+    }
+
+    #[test]
+    fn font_draws_on_ad() {
+        let b = ad_poster(2, "STAR PIZZA", "STEP RIGHT UP");
+        // some white-ish text pixels exist in the name band
+        let mut hits = 0;
+        for y in 96..132u32 {
+            for x in 0..256u32 {
+                let i = ((y * 256 + x) * 4) as usize;
+                if b[i] > 200 && b[i + 1] > 80 && b[i + 1] < 180 {
+                    hits += 1;
+                }
+            }
+        }
+        assert!(hits > 200, "expected magenta text pixels, got {hits}");
+    }
+}
