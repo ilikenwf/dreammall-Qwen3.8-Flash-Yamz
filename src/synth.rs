@@ -123,8 +123,6 @@ fn reverb(buf: &mut [f32], wet: f32) {
     let fb = 0.78f32;
     let afb = 0.5f32;
     for ch in 0..2 {
-        let mut d1 = 0.0f32;
-        let mut d2 = 0.0f32;
         for i in 0..buf.len() / 2 {
             let j = i * 2 + ch;
             let x = buf[j];
@@ -134,7 +132,6 @@ fn reverb(buf: &mut [f32], wet: f32) {
             let out_pre = y;
             let aout = a1[i % A1] * afb + out_pre;
             a1[i % A1] = out_pre - a1[i % A1] * afb;
-            let _ = (d1, d2);
             buf[j] += aout * wet;
         }
     }

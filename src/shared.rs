@@ -1,15 +1,12 @@
 //! Shared ECS types for the bevy binary (components/resources). Pure math lives in `game`.
-
-use crate::game::{R_IN, R_MID, R_OUT};
-use bevy::audio::Volume;
-use bevy::ecs::system::Resource;
+use dreammall::game::{R_IN, R_MID, R_OUT};
 use bevy::math::Vec2;
-use bevy::prelude::{Color, Component, Entity, Handle, Image, Mesh, Quat, Vec3};
-use bevy::render::render_resource::{Extent3d, TextureDimension, TextureFormat};
+use bevy::prelude::{default, Component, Entity, Handle, Mesh, Quat, Resource, States, Transform, Vec3};
 use bevy::{audio::AudioSource, pbr::StandardMaterial};
 
 #[derive(States, Clone, Copy, PartialEq, Eq, Hash, Debug, Default)]
 pub enum GS {
+    #[default]
     Dreaming,
     Ended,
 }
@@ -49,6 +46,7 @@ pub struct Run {
     pub won: Option<WinKind>, // set by win trigger; ends after fade
     pub won_timer: f32,
     pub clock: f32,
+    pub locked: bool,
     pub foot_l: Handle<AudioSource>,
     pub foot_r: Handle<AudioSource>,
 }
@@ -77,6 +75,7 @@ impl Run {
             won: None,
             won_timer: 0.0,
             clock: 0.0,
+            locked: false,
             foot_l,
             foot_r,
         }
@@ -92,14 +91,10 @@ pub fn toast(run: &mut Run, msg: &str) {
 pub struct Mats {
     pub floor: Handle<StandardMaterial>,
     pub ceil: Handle<StandardMaterial>,
-    pub walls: Vec<Handle<StandardMaterial>>, // 3 hue variants, swapped on mutation
-    pub brick: Handle<StandardMaterial>,
     pub water: Handle<StandardMaterial>,
     pub metal: Handle<StandardMaterial>,
     pub glass: Handle<StandardMaterial>,
     pub mirror: Handle<StandardMaterial>,
-    pub dark: Handle<StandardMaterial>,
-    pub sunset: Handle<StandardMaterial>,
     pub nyan: Handle<StandardMaterial>,
     pub marble: Handle<StandardMaterial>,
     pub gold: Handle<StandardMaterial>,
@@ -113,7 +108,6 @@ pub struct Mats {
     pub sausage: Handle<StandardMaterial>,
     pub mustard: Handle<StandardMaterial>,
     pub plate: Handle<StandardMaterial>,
-    pub nyan_img: Handle<Image>,
 }
 
 #[derive(Resource)]
@@ -133,7 +127,6 @@ pub struct Music {
     pub current: usize,
     pub cur_ent: Option<Entity>,
     pub cur_spawn: f32,
-    pub cur_vol: Volume,
     pub fading: Vec<(Entity, f32)>, // (entity, fadeout_start_clock)
 }
 
@@ -160,22 +153,19 @@ pub struct WorldRoot;
 pub struct Sec(pub usize);
 /// mutable-by-mutation role
 #[derive(Component)]
-pub enum Mut {
+pub enum Role {
     Wall,
     Sign,
     Ad,
     Light,
     Side, // bench/table/plant: mirror r about R_MID
     Water,
-    Nyan, // nyan-cat quad inside a mirror
 }
 /// local arc placement spec: ring radius, angle offset from section center, height
 #[derive(Component)]
 pub struct Prop {
     pub r: f32,
     pub off: f32,
-    pub y: f32,
-    pub rot: f32, // extra Y rotation beyond rot_y(off), degrees
 }
 /// stable per-section slot index for hashing (signs/ads/side props)
 #[derive(Component)]
@@ -208,6 +198,11 @@ pub struct Player;
 pub struct SleepBtn;
 #[derive(Component)]
 pub struct ExitBtn;
+/// section root entity marker (section-local frame origin)
+#[derive(Component)]
+pub struct SectionRoot {
+    pub id: usize,
+}
 
 // ---- layout helpers shared by world/player ----
 pub const MID: f32 = R_MID;
@@ -215,14 +210,23 @@ pub const WALK_IN: f32 = R_IN + 0.45; // walkable clamp (inner)
 pub const WALK_OUT: f32 = R_OUT - 0.45; // walkable clamp (outer)
 
 pub fn local_arc(off_deg: f32, r: f32, y: f32) -> Vec3 {
-    let (x, z) = crate::game::arc_point(off_deg, r);
+    let (x, z) = dreammall::game::arc_point(off_deg, r);
     Vec3::new(x, y, z)
 }
 
 /// section root transform: rotated so local angle 0 == section center direction
 pub fn section_transform(i: usize) -> Transform {
-    let c = crate::game::section_center(i);
+    let c = dreammall::game::section_center(i);
     Transform::from_rotation(Quat::from_rotation_y(c.to_radians()))
+}
+
+/// world transform for a Prop-rooted entity (section-local frame)
+pub fn prop_tf(r: f32, off: f32, y: f32, rot: f32) -> Transform {
+    Transform {
+        translation: local_arc(off, r, y),
+        rotation: Quat::from_rotation_y((off + rot).to_radians()),
+        ..default()
+    }
 }
 
 /// shared mesh helpers used by world spawning
@@ -230,7 +234,10 @@ pub fn quad(w: f32, h: f32) -> Mesh {
     // vertical quad facing +Z in local space, uv 0..1
     let hw = w / 2.0;
     let hh = h / 2.0;
-    let mut m = Mesh::new(bevy::mesh::PrimitiveTopology::TriangleList);
+    let mut m = Mesh::new(
+        bevy::mesh::PrimitiveTopology::TriangleList,
+        bevy::asset::RenderAssetUsages::RENDER_WORLD,
+    );
     m.insert_attribute(
         Mesh::ATTRIBUTE_POSITION,
         vec![[-hw, -hh, 0.0], [hw, -hh, 0.0], [hw, hh, 0.0], [-hw, hh, 0.0]],
@@ -247,27 +254,3 @@ pub fn quad(w: f32, h: f32) -> Mesh {
     m
 }
 
-pub fn upload_image(
-    assets: &mut bevy::asset::Assets<Image>,
-    w: u32,
-    h: u32,
-    data: Vec<u8>,
-    srgb: bool,
-) -> Handle<Image> {
-    let fmt = if srgb {
-        TextureFormat::Rgba8UnormSrgb
-    } else {
-        TextureFormat::Rgba8Unorm
-    };
-    assets.add(Image::new(
-        Extent3d {
-            width: w,
-            height: h,
-            depth_or_array_layers: 1,
-        },
-        TextureDimension::D2,
-        data,
-        fmt,
-        bevy::asset::RenderAssetUsages::RENDER_WORLD,
-    ))
-}

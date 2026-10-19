@@ -2,6 +2,7 @@
 use crate::shared::*;
 use bevy::prelude::*;
 use bevy::render::render_resource::{Extent3d, TextureDimension, TextureFormat};
+use bevy::asset::RenderAssetUsages;
 use dreammall::game::*;
 use dreammall::texturegen;
 
@@ -43,45 +44,44 @@ pub fn mat_tex(
     let img = tex_rgba(assets, w, h, data, true);
     let mut m = StandardMaterial {
         base_color: base,
-        base_color_texture: Some(img),
+        base_color_texture: Some(img.clone()),
         perceptual_roughness: 0.65,
         ..default()
     };
     if emissive > 0.0 {
         let lc = LinearRgba::from(base);
         m.emissive = LinearRgba::new(lc.red * emissive, lc.green * emissive, lc.blue * emissive, 1.0);
-        m.emissive_texture = m.base_color_texture.clone();
+        m.emissive_texture = Some(img);
     }
     mats.add(m)
 }
 
-fn plane(w: f32, h: f32) -> Handle<Mesh> {
-    Mesh::from(bevy::mesh::Plane3d::new(w, h)).into()
+fn plane(w: f32, h: f32) -> Mesh {
+    quad(w, h)
 }
 
-fn box_m(x: f32, y: f32, z: f32) -> Handle<Mesh> {
-    Mesh::from(bevy::mesh::Cuboid::new(x, y, z)).into()
+fn box_m(x: f32, y: f32, z: f32) -> Mesh {
+    Cuboid::new(x, y, z).into()
 }
 
-fn cyl(r: f32, h: f32) -> Handle<Mesh> {
-    Mesh::from(bevy::mesh::Cylinder::new(r, h)).into()
+fn cyl(r: f32, h: f32) -> Mesh {
+    Cylinder::new(r, h).into()
 }
 
-fn ball(r: f32) -> Handle<Mesh> {
-    Mesh::from(bevy::mesh::Sphere::new(r)).into()
+fn ball(r: f32) -> Mesh {
+    Sphere::new(r).into()
 }
 
 /// per-section material instances so mutation can recolor one section only
-#[derive(Resource)]
+#[derive(Resource, Default)]
 pub struct WorldMats {
-    /// [section][variant] wall materials
     pub wall_variants: Vec<[Handle<StandardMaterial>; 3]>,
     pub cur_variant: Vec<usize>,
 }
 
 /// ring band mesh between r0..r1 spanning [a0,a1] degrees at height y.
 /// uv u along arc (0..1), v radial; caller tiles via texture repeat.
-fn band_mesh(a0: f32, a1: f32, r0: f32, r1: f32, y: f32, segments: usize) -> Handle<Mesh> {
+fn band_mesh(a0: f32, a1: f32, r0: f32, r1: f32, y: f32, segments: usize) -> Mesh {
     let mut pos = Vec::new();
     let mut uv = Vec::new();
     let mut idx: Vec<u32> = Vec::new();
@@ -98,16 +98,19 @@ fn band_mesh(a0: f32, a1: f32, r0: f32, r1: f32, y: f32, segments: usize) -> Han
         let a = s * 2;
         idx.extend_from_slice(&[a, a + 1, a + 2, a + 1, a + 3, a + 2]);
     }
-    let mut m = Mesh::new(bevy::mesh::MeshKind::TriangleList);
+    let mut m = Mesh::new(
+        bevy::mesh::PrimitiveTopology::TriangleList,
+        RenderAssetUsages::RENDER_WORLD,
+    );
     m.insert_attribute(Mesh::ATTRIBUTE_POSITION, pos);
     m.insert_attribute(Mesh::ATTRIBUTE_UV_0, uv);
-    m.set_indices(Some(bevy::mesh::MeshIndices::U32(idx)));
+    m.insert_indices(bevy::mesh::Indices::U32(idx));
     m.compute_normals();
-    m.into()
+    m
 }
 
 /// vertical wall band: same as band but extruded 0..h, normal horizontal
-fn wall_band(a0: f32, a1: f32, r: f32, h: f32, segments: usize) -> Handle<Mesh> {
+fn wall_band(a0: f32, a1: f32, r: f32, h: f32, segments: usize) -> Mesh {
     let mut pos = Vec::new();
     let mut uv = Vec::new();
     let mut idx: Vec<u32> = Vec::new();
@@ -124,12 +127,15 @@ fn wall_band(a0: f32, a1: f32, r: f32, h: f32, segments: usize) -> Handle<Mesh> 
         let a = s * 2;
         idx.extend_from_slice(&[a, a + 2, a + 1, a + 1, a + 2, a + 3]);
     }
-    let mut m = Mesh::new(bevy::mesh::MeshKind::TriangleList);
+    let mut m = Mesh::new(
+        bevy::mesh::PrimitiveTopology::TriangleList,
+        RenderAssetUsages::RENDER_WORLD,
+    );
     m.insert_attribute(Mesh::ATTRIBUTE_POSITION, pos);
     m.insert_attribute(Mesh::ATTRIBUTE_UV_0, uv);
-    m.set_indices(Some(bevy::mesh::MeshIndices::U32(idx)));
+    m.insert_indices(bevy::mesh::Indices::U32(idx));
     m.compute_normals();
-    m.into()
+    m
 }
 
 pub fn ceil_h(i: usize, seed: u64) -> f32 {
@@ -137,7 +143,7 @@ pub fn ceil_h(i: usize, seed: u64) -> f32 {
 }
 
 fn spawn_section_shell(
-    commands: &mut Commands,
+    commands: &mut Commands, meshes: &mut ResMut<Assets<Mesh>>,
     root: Entity,
     mats: &Mats,
     wm: &WorldMats,
@@ -160,14 +166,14 @@ fn spawn_section_shell(
     let floor = commands
         .spawn((
             Sec(i),
-            Mesh3d(band_mesh(-18.0, 18.0, R_IN, R_OUT, 0.0, 8)),
+            Mesh3d(meshes.add(band_mesh(-18.0, 18.0, R_IN, R_OUT, 0.0, 8))),
             MeshMaterial3d(mats.floor.clone()),
         ))
         .id();
     let ceil = commands
         .spawn((
             Sec(i),
-            Mesh3d(band_mesh(-18.0, 18.0, R_IN + 0.01, R_OUT - 0.01, h, 8)),
+            Mesh3d(meshes.add(band_mesh(-18.0, 18.0, R_IN + 0.01, R_OUT - 0.01, h, 8))),
             MeshMaterial3d(mats.ceil.clone()),
         ))
         .id();
@@ -177,9 +183,9 @@ fn spawn_section_shell(
     let outer = commands
         .spawn((
             Sec(i),
-            Mesh3d(wall_band(-18.0, 18.0, R_OUT, h, 8)),
+            Mesh3d(meshes.add(wall_band(-18.0, 18.0, R_OUT, h, 8))),
             MeshMaterial3d(wm.wall_variants[i][v].clone()),
-            Mut::Wall,
+            Role::Wall,
         ))
         .id();
     commands.entity(sec).add_child(outer);
@@ -193,12 +199,12 @@ fn spawn_section_shell(
     let inner = commands
         .spawn((
             Sec(i),
-            Mesh3d(wall_band(-18.0, 18.0, R_IN, h, 8)),
+            Mesh3d(meshes.add(wall_band(-18.0, 18.0, R_IN, h, 8))),
             MeshMaterial3d(inner_mat),
             if kind == SectionKind::Atrium {
-                Mut::Ad
+                Role::Ad
             } else {
-                Mut::Wall
+                Role::Wall
             },
         ))
         .id();
@@ -208,35 +214,38 @@ fn spawn_section_shell(
     let strip = commands
         .spawn((
             Sec(i),
-            Mesh3d(band_mesh(-14.0, 14.0, R_MID - 0.5, R_MID + 0.5, h - 0.06, 6)),
+            Mesh3d(meshes.add(band_mesh(-14.0, 14.0, R_MID - 0.5, R_MID + 0.5, h - 0.06, 6))),
             MeshMaterial3d(mats.strip.clone()),
         ))
         .id();
     commands.entity(sec).add_child(strip);
 
     // point light at section center
-    commands.spawn((
-        Sec(i),
-        PointLight {
-            intensity: 9000.0,
-            range: 26.0,
-            color: Color::srgb(1.0, 0.86, 0.92),
-            ..default()
-        },
-        Transform::from_translation(local_arc(0.0, MID, h - 0.6)),
-        Mut::Light,
-    ));
+    let light = commands
+        .spawn((
+            Sec(i),
+            PointLight {
+                intensity: 9000.0,
+                range: 26.0,
+                color: Color::srgb(1.0, 0.86, 0.92),
+                ..default()
+            },
+            Transform::from_translation(local_arc(0.0, MID, h - 0.6)),
+            Role::Light,
+        ))
+        .id();
+    commands.entity(sec).add_child(light);
 
     match kind {
-        SectionKind::Shops => spawn_shops(commands, sec, mats, seed, i),
-        SectionKind::FoodCourt => spawn_food(commands, sec, root, mats, seed, i),
-        SectionKind::Fountain => spawn_fountain(commands, sec, root, mats, seed, i),
-        SectionKind::Atrium => spawn_atrium(commands, sec, mats, seed, i),
+        SectionKind::Shops => spawn_shops(commands, meshes, sec, mats, seed, i),
+        SectionKind::FoodCourt => spawn_food(commands, meshes, sec, mats, seed, i),
+        SectionKind::Fountain => spawn_fountain(commands, meshes, sec, mats, seed, i),
+        SectionKind::Atrium => spawn_atrium(commands, meshes, sec, mats, seed, i),
     }
 }
 
 fn spawn_shops(
-    commands: &mut Commands,
+    commands: &mut Commands, meshes: &mut ResMut<Assets<Mesh>>,
     sec: Entity,
     mats: &Mats,
     seed: u64,
@@ -251,12 +260,12 @@ fn spawn_shops(
             .spawn((
                 Sec(i),
                 Slot(slot),
-                Mut::Sign,
-                Mesh3d(plane(3.4, 2.4)),
+                Role::Sign,
+                Mesh3d(meshes.add(plane(3.4, 2.4))),
                 MeshMaterial3d(mats.signs[gi].clone()),
                 Transform {
                     translation: local_arc(*off, R_OUT - 0.05, 1.7),
-                    rotation: Quat::from_rotation_y(off.to_radians() + 180.0),
+                    rotation: Quat::from_rotation_y((off + 180.0).to_radians()),
                     ..default()
                 },
             ))
@@ -270,12 +279,12 @@ fn spawn_shops(
             .spawn((
                 Sec(i),
                 Slot(slot),
-                Mut::Ad,
-                Mesh3d(plane(1.5, 2.1)),
+                Role::Ad,
+                Mesh3d(meshes.add(plane(1.5, 2.1))),
                 MeshMaterial3d(mats.ads[gi].clone()),
                 Transform {
                     translation: local_arc(*off, R_OUT - 0.04, 3.3),
-                    rotation: Quat::from_rotation_y(off.to_radians() + 180.0),
+                    rotation: Quat::from_rotation_y((off + 180.0).to_radians()),
                     ..default()
                 },
             ))
@@ -284,50 +293,48 @@ fn spawn_shops(
     }
     // vending machines near outer wall
     for (slot, off) in [(-16.5f32), 16.5].iter().enumerate() {
-        let mut e = commands.spawn((
+        let e = commands.spawn((
             Sec(i),
             Slot(slot),
-            Mut::Side,
+            Role::Side,
             Prop {
                 r: R_OUT - 0.75,
                 off: *off,
-                y: 1.0,
-                rot: 180.0,
             },
+            prop_tf(R_OUT - 0.75, *off, 1.0, 180.0),
             Obs(0.75),
-        ));
+        )).id();
         let body = commands
             .spawn((
                 Sec(i),
-                Mesh3d(box_m(1.1, 2.0, 0.7)),
+                Mesh3d(meshes.add(box_m(1.1, 2.0, 0.7))),
                 MeshMaterial3d(mats.ads[(i * 2 + slot) % 12].clone()),
             ))
             .id();
-        commands.entity(e.id()).add_child(body);
-        commands.entity(sec).add_child(e.id());
+        commands.entity(e).add_child(body);
+        commands.entity(sec).add_child(e);
     }
     // potted plants + occasional bench
     for (slot, off) in [(-6.0f32), 6.0].iter().enumerate() {
-        spawn_plant(commands, sec, mats, i, slot, *off, R_MID + 2.6);
+        spawn_plant(commands, meshes, sec, mats, i, slot, *off, R_MID + 2.6);
     }
     let bench = commands
         .spawn((
             Sec(i),
             Slot(9),
-            Mut::Side,
+            Role::Side,
             Prop {
                 r: R_IN + 1.2,
                 off: 0.0,
-                y: 0.0,
-                rot: 0.0,
             },
+            prop_tf(R_IN + 1.2, 0.0, 0.0, 0.0),
             Obs(0.8),
         ))
         .id();
     let seat = commands
         .spawn((
             Sec(i),
-            Mesh3d(box_m(1.8, 0.12, 0.55)),
+            Mesh3d(meshes.add(box_m(1.8, 0.12, 0.55))),
             MeshMaterial3d(mats.bench[(i * 7 + 9) % 4].clone()),
             Transform::from_xyz(0.0, 0.45, 0.0),
         ))
@@ -337,12 +344,13 @@ fn spawn_shops(
 
     // two mirrors on outer wall
     for (slot, off) in [(-10.5f32), 10.5].iter().enumerate() {
-        spawn_mirror(commands, sec, mats, i, slot, *off);
+        spawn_mirror(commands, meshes, sec, mats, i, slot, *off);
     }
+    let _ = seed;
 }
 
 fn spawn_mirror(
-    commands: &mut Commands,
+    commands: &mut Commands, meshes: &mut ResMut<Assets<Mesh>>,
     sec: Entity,
     mats: &Mats,
     i: usize,
@@ -353,12 +361,12 @@ fn spawn_mirror(
         .spawn((
             Sec(i),
             Slot(slot),
-            Mut::Ad,
-            Mesh3d(plane(2.2, 2.8)),
+            Role::Ad,
+            Mesh3d(meshes.add(plane(2.2, 2.8))),
             MeshMaterial3d(mats.mirror.clone()),
             Transform {
                 translation: local_arc(off, R_OUT - 0.06, 1.75),
-                rotation: Quat::from_rotation_y(off.to_radians() + 180.0),
+                rotation: Quat::from_rotation_y((off + 180.0).to_radians()),
                 ..default()
             },
         ))
@@ -367,9 +375,9 @@ fn spawn_mirror(
         .spawn((
             Sec(i),
             NyanQuad {
-                phase: hash2(hash2(i as u64, slot as u64), 77) % 628 / 100.0,
+                phase: (hash2(hash2(i as u64, slot as u64), 77) % 628) as f32 / 100.0,
             },
-            Mesh3d(plane(2.0, 0.7)),
+            Mesh3d(meshes.add(plane(2.0, 0.7))),
             MeshMaterial3d(mats.nyan.clone()),
             Transform::from_xyz(0.0, 0.55, 0.03),
         ))
@@ -379,7 +387,7 @@ fn spawn_mirror(
 }
 
 fn spawn_plant(
-    commands: &mut Commands,
+    commands: &mut Commands, meshes: &mut ResMut<Assets<Mesh>>,
     sec: Entity,
     mats: &Mats,
     i: usize,
@@ -391,20 +399,19 @@ fn spawn_plant(
         .spawn((
             Sec(i),
             Slot(slot),
-            Mut::Side,
+            Role::Side,
             Prop {
                 r,
                 off,
-                y: 0.0,
-                rot: 0.0,
             },
+            prop_tf(r, off, 0.0, 0.0),
             Obs(0.55),
         ))
         .id();
     let pot = commands
         .spawn((
             Sec(i),
-            Mesh3d(cyl(0.32, 0.5)),
+            Mesh3d(meshes.add(cyl(0.32, 0.5))),
             MeshMaterial3d(mats.pot.clone()),
             Transform::from_xyz(0.0, 0.25, 0.0),
         ))
@@ -412,7 +419,7 @@ fn spawn_plant(
     let leaves = commands
         .spawn((
             Sec(i),
-            Mesh3d(ball(0.6)),
+            Mesh3d(meshes.add(ball(0.6))),
             MeshMaterial3d(mats.plant.clone()),
             Transform::from_xyz(0.0, 1.15, 0.0),
         ))
@@ -422,9 +429,8 @@ fn spawn_plant(
 }
 
 fn spawn_food(
-    commands: &mut Commands,
+    commands: &mut Commands, meshes: &mut ResMut<Assets<Mesh>>,
     sec: Entity,
-    root: Entity,
     mats: &Mats,
     seed: u64,
     i: usize,
@@ -436,20 +442,19 @@ fn spawn_food(
             .spawn((
                 Sec(i),
                 Slot(slot),
-                Mut::Side,
+                Role::Side,
                 Prop {
                     r: *r,
                     off: *off,
-                    y: 0.0,
-                    rot: 0.0,
                 },
+                prop_tf(*r, *off, 0.0, 0.0),
                 Obs(0.7),
             ))
             .id();
         let top = commands
             .spawn((
                 Sec(i),
-                Mesh3d(cyl(0.62, 0.06)),
+                Mesh3d(meshes.add(cyl(0.62, 0.06))),
                 MeshMaterial3d(mats.marble.clone()),
                 Transform::from_xyz(0.0, 0.72, 0.0),
             ))
@@ -457,7 +462,7 @@ fn spawn_food(
         let leg = commands
             .spawn((
                 Sec(i),
-                Mesh3d(cyl(0.08, 0.72)),
+                Mesh3d(meshes.add(cyl(0.08, 0.72))),
                 MeshMaterial3d(mats.metal.clone()),
                 Transform::from_xyz(0.0, 0.36, 0.0),
             ))
@@ -471,12 +476,10 @@ fn spawn_food(
             .spawn((
                 Sec(i),
                 Slot(3 + slot),
-                Mut::Side,
+                Role::Side,
                 Prop {
                     r: R_IN + 1.2,
                     off: *off,
-                    y: 0.0,
-                    rot: 0.0,
                 },
                 Obs(0.8),
             ))
@@ -484,7 +487,7 @@ fn spawn_food(
         let seat = commands
             .spawn((
                 Sec(i),
-                Mesh3d(box_m(1.8, 0.12, 0.55)),
+                Mesh3d(meshes.add(box_m(1.8, 0.12, 0.55))),
                 MeshMaterial3d(mats.bench[(i + slot) % 4].clone()),
                 Transform::from_xyz(0.0, 0.45, 0.0),
             ))
@@ -493,10 +496,10 @@ fn spawn_food(
         commands.entity(sec).add_child(b);
     }
     for (slot, off) in [(-4.0f32), 4.0].iter().enumerate() {
-        spawn_plant(commands, sec, mats, i, 5 + slot, *off, R_MID + 2.4);
+        spawn_plant(commands, meshes, sec, mats, i, 5 + slot, *off, R_MID + 2.4);
     }
     for (slot, off) in [(-12.0f32), 12.0].iter().enumerate() {
-        spawn_mirror(commands, sec, mats, i, 7 + slot, *off);
+        spawn_mirror(commands, meshes, sec, mats, i, 7 + slot, *off);
     }
     // hotdog on the center table of section 6 (spawn hidden; revealed by hotdog_spawned)
     if i == 6 {
@@ -508,23 +511,22 @@ fn spawn_food(
                 Prop {
                     r,
                     off,
-                    y: 0.80,
-                    rot: 0.0,
                 },
+                prop_tf(r, off, 0.80, 0.0),
                 Visibility::Hidden,
             ))
             .id();
         let plate = commands
             .spawn((
                 Sec(i),
-                Mesh3d(cyl(0.24, 0.03)),
+                Mesh3d(meshes.add(cyl(0.24, 0.03))),
                 MeshMaterial3d(mats.plate.clone()),
             ))
             .id();
         let bun = commands
             .spawn((
                 Sec(i),
-                Mesh3d(box_m(0.26, 0.09, 0.11)),
+                Mesh3d(meshes.add(box_m(0.26, 0.09, 0.11))),
                 MeshMaterial3d(mats.bun.clone()),
                 Transform::from_xyz(0.0, 0.06, 0.0),
             ))
@@ -532,7 +534,7 @@ fn spawn_food(
         let sas = commands
             .spawn((
                 Sec(i),
-                Mesh3d(box_m(0.24, 0.07, 0.08)),
+                Mesh3d(meshes.add(box_m(0.24, 0.07, 0.08))),
                 MeshMaterial3d(mats.sausage.clone()),
                 Transform::from_xyz(0.0, 0.11, 0.0),
             ))
@@ -540,52 +542,53 @@ fn spawn_food(
         let mus = commands
             .spawn((
                 Sec(i),
-                Mesh3d(box_m(0.24, 0.02, 0.03)),
+                Mesh3d(meshes.add(box_m(0.24, 0.02, 0.03))),
                 MeshMaterial3d(mats.mustard.clone()),
                 Transform::from_xyz(0.0, 0.155, 0.0),
             ))
             .id();
         commands.entity(hd).add_children(&[plate, bun, sas, mus]);
-        commands.entity(root).add_child(hd);
+        commands.entity(sec).add_child(hd);
     }
     let _ = seed;
 }
 
 fn spawn_fountain(
-    commands: &mut Commands,
+    commands: &mut Commands, meshes: &mut ResMut<Assets<Mesh>>,
     sec: Entity,
-    root: Entity,
     mats: &Mats,
     seed: u64,
     i: usize,
 ) {
-    let center = local_arc(0.0, MID, 0.0);
+    let cdeg = section_center(i);
+    let (cx, cz) = arc_point(cdeg, MID);
+    let center = Vec3::new(cx, 0.0, cz);
     let f = commands
         .spawn((
             Sec(i),
             Fountain { center },
-            Mut::Water,
+            Role::Water,
             Prop {
                 r: MID,
                 off: 0.0,
-                y: 0.0,
-                rot: 0.0,
             },
+            prop_tf(MID, 0.0, 0.0, 0.0),
             Obs(2.0),
         ))
         .id();
     let rim = commands
         .spawn((
             Sec(i),
-            Mesh3d(bevy::mesh::Torus::new(1.85, 0.25).into()),
+            Mesh3d(meshes.add(Torus::new(1.6, 2.1))),
             MeshMaterial3d(mats.marble.clone()),
+            // torus is generated flat in XZ (hole axis = Y); no rotation needed
             Transform::from_xyz(0.0, 0.55, 0.0),
         ))
         .id();
     let basin = commands
         .spawn((
             Sec(i),
-            Mesh3d(cyl(1.85, 1.0)),
+            Mesh3d(meshes.add(cyl(1.85, 1.0))),
             MeshMaterial3d(mats.marble.clone()),
             Transform::from_xyz(0.0, 0.5, 0.0),
         ))
@@ -593,7 +596,7 @@ fn spawn_fountain(
     let water = commands
         .spawn((
             Sec(i),
-            Mesh3d(bevy::mesh::Circle::new(1.75, 32).into()),
+            Mesh3d(meshes.add(Circle::new(1.75))),
             MeshMaterial3d(mats.water.clone()),
             Transform {
                 translation: Vec3::new(0.0, 0.85, 0.0),
@@ -605,7 +608,7 @@ fn spawn_fountain(
     let pillar = commands
         .spawn((
             Sec(i),
-            Mesh3d(cyl(0.22, 1.3)),
+            Mesh3d(meshes.add(cyl(0.22, 1.3))),
             MeshMaterial3d(mats.marble.clone()),
             Transform::from_xyz(0.0, 1.2, 0.0),
         ))
@@ -613,7 +616,7 @@ fn spawn_fountain(
     let gold = commands
         .spawn((
             Sec(i),
-            Mesh3d(ball(0.32)),
+            Mesh3d(meshes.add(ball(0.32))),
             MeshMaterial3d(mats.gold.clone()),
             Transform::from_xyz(0.0, 2.05, 0.0),
         ))
@@ -630,16 +633,15 @@ fn spawn_fountain(
                 Prop {
                     r: MID - 2.7,
                     off: 0.0,
-                    y: 0.0,
-                    rot: 0.0,
                 },
+                prop_tf(MID - 2.7, 0.0, 0.0, 0.0),
                 Obs(0.45),
             ))
             .id();
         let post = commands
             .spawn((
                 Sec(i),
-                Mesh3d(cyl(0.14, 1.0)),
+                Mesh3d(meshes.add(cyl(0.14, 1.0))),
                 MeshMaterial3d(mats.marble.clone()),
                 Transform::from_xyz(0.0, 0.5, 0.0),
             ))
@@ -653,26 +655,25 @@ fn spawn_fountain(
                 Prop {
                     r: MID - 2.7,
                     off: 0.0,
-                    y: 1.05,
-                    rot: 0.0,
                 },
+                prop_tf(MID - 2.7, 0.0, 1.05, 0.0),
             ))
             .id();
         let coin = commands
             .spawn((
                 Sec(i),
-                Mesh3d(cyl(0.14, 0.03)),
+                Mesh3d(meshes.add(cyl(0.14, 0.03))),
                 MeshMaterial3d(mats.gold.clone()),
             ))
             .id();
         commands.entity(penny).add_child(coin);
-        commands.entity(root).add_child(penny);
+        commands.entity(sec).add_child(penny);
     }
     let _ = seed;
 }
 
 fn spawn_atrium(
-    commands: &mut Commands,
+    commands: &mut Commands, meshes: &mut ResMut<Assets<Mesh>>,
     sec: Entity,
     mats: &Mats,
     seed: u64,
@@ -687,64 +688,66 @@ fn spawn_atrium(
         let mesh = match (h >> 29) % 3 {
             0 => ball(1.6),
             1 => box_m(2.4, 2.4, 2.4),
-            _ => bevy::mesh::Torus::new(1.5, 0.5).into(),
+            _ => Torus::new(1.3, 2.3).into(),
         };
-        commands.spawn((
-            Sec(i),
-            FloatShape {
-                speed: 0.1 + ((h >> 40) % 40) as f32 / 100.0,
-                axis: Vec3::new(
-                    ((h >> 20) % 100) as f32 / 100.0 - 0.5,
-                    1.0,
-                    ((h >> 30) % 100) as f32 / 100.0 - 0.5,
-                )
-                .normalize(),
-            },
-            Mesh3d(mesh),
-            MeshMaterial3d(mats.ads[(i + s as usize) % 12].clone()),
-            Transform::from_translation(local_arc(off, r, y)),
-        ));
+        let fs = commands
+            .spawn((
+                Sec(i),
+                FloatShape {
+                    speed: 0.1 + ((h >> 40) % 40) as f32 / 100.0,
+                    axis: Vec3::new(
+                        ((h >> 20) % 100) as f32 / 100.0 - 0.5,
+                        1.0,
+                        ((h >> 30) % 100) as f32 / 100.0 - 0.5,
+                    )
+                    .normalize(),
+                },
+                Mesh3d(meshes.add(mesh)),
+                MeshMaterial3d(mats.ads[(i + s as usize) % 12].clone()),
+                Transform::from_translation(local_arc(off, r, y)),
+            ))
+            .id();
+        commands.entity(sec).add_child(fs);
     }
     // a couple of benches and a mirror for life
     let b = commands
         .spawn((
             Sec(i),
             Slot(0),
-            Mut::Side,
+            Role::Side,
             Prop {
                 r: R_IN + 1.2,
                 off: 8.0,
-                y: 0.0,
-                rot: 0.0,
             },
+            prop_tf(R_IN + 1.2, 8.0, 0.0, 0.0),
             Obs(0.8),
         ))
         .id();
     let seat = commands
         .spawn((
             Sec(i),
-            Mesh3d(box_m(1.8, 0.12, 0.55)),
+            Mesh3d(meshes.add(box_m(1.8, 0.12, 0.55))),
             MeshMaterial3d(mats.bench[i % 4].clone()),
             Transform::from_xyz(0.0, 0.45, 0.0),
         ))
         .id();
     commands.entity(b).add_child(seat);
     commands.entity(sec).add_child(b);
-    spawn_mirror(commands, sec, mats, i, 1, 6.0);
+    spawn_mirror(commands, meshes, sec, mats, i, 1, 6.0);
 }
 
 pub fn build_world(
-    commands: &mut Commands,
+    commands: &mut Commands, meshes: &mut ResMut<Assets<Mesh>>,
     images: &mut ResMut<Assets<Image>>,
     smats: &mut ResMut<Assets<StandardMaterial>>,
     mats: &Mats,
-    mut obstacles: ResMut<Obstacles>,
-    mut wm: ResMut<WorldMats>,
+    obstacles: &mut Obstacles,
+    wm: &mut WorldMats,
     seed: u64,
 ) {
     obstacles.clear();
     let root = commands
-        .spawn((WorldRoot, Name::new("world")))
+        .spawn((WorldRoot, Name::new("world"), Transform::default()))
         .id();
 
     // per-section wall material variants
@@ -762,7 +765,7 @@ pub fn build_world(
     }
 
     for i in 0..N_SEC {
-        spawn_section_shell(commands, root, mats, &wm, seed, i);
+        spawn_section_shell(commands, meshes, root, mats, &wm, seed, i);
     }
 
     // penny on the food court center table (section 2) - spawn visible
@@ -771,11 +774,36 @@ pub fn build_world(
 }
 
 /// deterministic hotdog reveal + obstacle rebuild after any mutation
-pub fn rebuild_obstacles(mut commands: Commands) {
+pub fn rebuild_obstacles(commands: &mut Commands) {
     // implemented as system via ObstacleBuild request
     commands.insert_resource(ObstacleBuildTick);
 }
 
 /// request resource so the system owning Obstacles can rebuild from Prop entities
-#[derive(Resource)]
+#[derive(Resource, Default)]
 pub struct ObstacleBuildTick;
+
+#[cfg(test)]
+mod winding_tests {
+    use super::*;
+    fn normals(m: &Mesh) -> Vec<[f32; 3]> {
+        let bevy::mesh::VertexAttributeValues::Float32x3(v) = m.attribute(Mesh::ATTRIBUTE_NORMAL).unwrap()
+        else {
+            panic!("no normals");
+        };
+        v.clone()
+    }
+    #[test]
+    fn floor_normals_up() {
+        let m = band_mesh(-18.0, 18.0, 40.0, 46.0, 0.0, 8);
+        let n = normals(&m);
+        println!("band normal[0] = {:?}", n[0]);
+        assert!(n[0][1] > 0.5, "floor normal should point up, got {:?}", n[0]);
+    }
+    #[test]
+    fn wall_normals_radial() {
+        let m = wall_band(-18.0, 18.0, 46.0, 4.0, 8);
+        let n = normals(&m);
+        println!("wall normal[0] = {:?}", n[0]);
+    }
+}

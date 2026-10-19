@@ -10,6 +10,9 @@ path = "src/lib.rs"
 [dependencies]
 bevy = { version = "0.20", default-features = false, features = [
   "x11",
+  "bevy_log",
+  "tonemapping_luts",
+  "zstd_rust",
   "wayland",
   "bevy_render",
   "bevy_pbr",
@@ -28,6 +31,7 @@ bevy = { version = "0.20", default-features = false, features = [
   "bevy_ui_widgets",
   "default_font",
 ] }
+bevy_render = { version = "0.20", default-features = false, features = ["gles"] }
 image = { version = "0.25", default-features = false, features = ["png"] }
 half = "2"
 

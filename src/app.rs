@@ -1,0 +1,1378 @@
+//! The bevy side: player, camera, interactions, mutation, wins, flight,
+//! procedural audio playback, UI. All world geometry comes from `world.rs`;
+//! all pure math from the `dreammall` lib crate.
+use crate::shared::*;
+use crate::world::{self, ObstacleBuildTick, WorldMats};
+use bevy::audio::{AudioSinkPlayback, PlaybackMode, Volume};
+use bevy::ecs::message::MessageWriter;
+use bevy::image::ImageSampler;
+use bevy::input::mouse::MouseMotion;
+use bevy::pbr::{DistanceFog, FogFalloff};
+use bevy::prelude::*;
+use bevy::camera::visibility::VisibleEntities;
+use bevy::ui::FocusPolicy;
+use bevy::ui::ComputedUiTargetCamera;
+use bevy::ui_widgets::{Activate, Button};
+use bevy::window::{CursorGrabMode, CursorOptions, PrimaryWindow};
+use dreammall::game::*;
+use dreammall::synth;
+use dreammall::texturegen;
+
+// ---------------------------------------------------------------- assets ----
+
+fn hsv_rgba(h: f64, s: f64, v: f64) -> Color {
+    let h = h - (h as i64) as f64;
+    let i = (h * 6.0).floor() as i64;
+    let f = h * 6.0 - i as f64;
+    let p = v * (1.0 - s);
+    let q = v * (1.0 - f * s);
+    let t = v * (1.0 - (1.0 - f) * s);
+    let (r, g, b) = match i % 6 {
+        0 => (v, t, p),
+        1 => (q, v, p),
+        2 => (p, v, t),
+        3 => (p, q, v),
+        4 => (t, p, v),
+        _ => (v, p, q),
+    };
+    Color::srgb(r as f32, g as f32, b as f32)
+}
+
+fn plain(mats: &mut ResMut<Assets<StandardMaterial>>, m: StandardMaterial) -> Handle<StandardMaterial> {
+    mats.add(m)
+}
+
+fn textured(
+    images: &mut ResMut<Assets<Image>>,
+    mats: &mut ResMut<Assets<StandardMaterial>>,
+    rgba: (u32, u32, Vec<u8>),
+    base: Color,
+    emissive: f32,
+) -> Handle<StandardMaterial> {
+    let (w, h, data) = rgba;
+    world::mat_tex(images, mats, w, h, data, base, emissive)
+}
+
+/// nearest-sampled textured material (pixel art)
+fn pixel_mat(
+    images: &mut ResMut<Assets<Image>>,
+    mats: &mut ResMut<Assets<StandardMaterial>>,
+    rgba: (u32, u32, Vec<u8>),
+    emissive: f32,
+) -> Handle<StandardMaterial> {
+    let (w, h, data) = rgba;
+    let img = world::tex_rgba(images, w, h, data, true);
+    if let Some(mut im) = images.get_mut(&img) {
+        im.sampler = ImageSampler::nearest();
+    }
+    let mut m = StandardMaterial {
+        base_color: Color::WHITE,
+        base_color_texture: Some(img),
+        perceptual_roughness: 1.0,
+        unlit: true,
+        ..default()
+    };
+    if emissive > 0.0 {
+        m.emissive = LinearRgba::new(emissive, emissive, emissive, 1.0);
+    }
+    mats.add(m)
+}
+
+fn build_mats(
+    images: &mut ResMut<Assets<Image>>,
+    smats: &mut ResMut<Assets<StandardMaterial>>,
+    seed: u64,
+) -> Mats {
+    let floor = textured(images, smats, (256, 256, texturegen::floor_tile(seed)), Color::WHITE, 0.0);
+    let ceil = textured(images, smats, (256, 256, texturegen::ceil_tile(seed)), Color::WHITE, 0.0);
+    let water = textured(images, smats, (128, 128, texturegen::water(seed)), Color::WHITE, 0.12);
+    let metal = plain(
+        smats,
+        StandardMaterial {
+            base_color: Color::srgb(0.72, 0.72, 0.78),
+            metallic: 0.85,
+            perceptual_roughness: 0.35,
+            ..default()
+        },
+    );
+    let glass = plain(
+        smats,
+        StandardMaterial {
+            base_color: Color::srgba(0.75, 0.85, 0.95, 0.28),
+            perceptual_roughness: 0.08,
+            alpha_mode: AlphaMode::Blend,
+            ..default()
+        },
+    );
+    let mirror = {
+        let data = texturegen::sunset(seed);
+        let img = world::tex_rgba(images, 256, 256, data, true);
+        let m = smats.add(StandardMaterial {
+            base_color: Color::WHITE,
+            base_color_texture: Some(img.clone()),
+            emissive: LinearRgba::new(0.85, 0.85, 0.85, 1.0),
+            emissive_texture: Some(img.clone()),
+            perceptual_roughness: 0.4,
+            ..default()
+        });
+        m
+    };
+    let nyan = pixel_mat(images, smats, (120, 40, texturegen::nyancat()), 0.7);
+    let marble = plain(
+        smats,
+        StandardMaterial {
+            base_color: Color::srgb(0.93, 0.91, 0.9),
+            perceptual_roughness: 0.25,
+            ..default()
+        },
+    );
+    let gold = plain(
+        smats,
+        StandardMaterial {
+            base_color: Color::srgb(1.0, 0.78, 0.25),
+            metallic: 1.0,
+            perceptual_roughness: 0.25,
+            emissive: LinearRgba::new(0.5, 0.35, 0.05, 1.0),
+            ..default()
+        },
+    );
+    let strip = plain(
+        smats,
+        StandardMaterial {
+            base_color: Color::srgb(1.0, 0.92, 0.96),
+            emissive: LinearRgba::new(3.0, 2.4, 2.7, 1.0),
+            ..default()
+        },
+    );
+    let mut signs = Vec::new();
+    for name in SHOP_NAMES.iter() {
+        signs.push(textured(images, smats, (256, 64, texturegen::sign_tex(seed, name)), Color::WHITE, 0.6));
+    }
+    let mut ads = Vec::new();
+    for i in 0..12 {
+        let name = SHOP_NAMES[i];
+        let slogan = SLOGANS[i % SLOGANS.len()];
+        ads.push(textured(images, smats, (256, 256, texturegen::ad_poster(seed, name, slogan)), Color::WHITE, 0.25));
+    }
+    let bench = (0..4)
+        .map(|i| {
+            plain(
+                smats,
+                StandardMaterial {
+                    base_color: hsv_rgba(i as f64 / 4.0 + 0.55, 0.35, 0.85),
+                    perceptual_roughness: 0.6,
+                    ..default()
+                },
+            )
+        })
+        .collect();
+    let plant = plain(
+        smats,
+        StandardMaterial {
+            base_color: Color::srgb(0.2, 0.55, 0.3),
+            perceptual_roughness: 0.8,
+            ..default()
+        },
+    );
+    let pot = plain(
+        smats,
+        StandardMaterial {
+            base_color: Color::srgb(0.65, 0.35, 0.25),
+            perceptual_roughness: 0.8,
+            ..default()
+        },
+    );
+    let bun = plain(
+        smats,
+        StandardMaterial {
+            base_color: Color::srgb(0.87, 0.68, 0.4),
+            perceptual_roughness: 0.7,
+            ..default()
+        },
+    );
+    let sausage = plain(
+        smats,
+        StandardMaterial {
+            base_color: Color::srgb(0.7, 0.22, 0.15),
+            perceptual_roughness: 0.6,
+            ..default()
+        },
+    );
+    let mustard = plain(
+        smats,
+        StandardMaterial {
+            base_color: Color::srgb(0.95, 0.8, 0.1),
+            perceptual_roughness: 0.5,
+            ..default()
+        },
+    );
+    let plate = plain(
+        smats,
+        StandardMaterial {
+            base_color: Color::srgb(0.95, 0.95, 0.95),
+            perceptual_roughness: 0.3,
+            ..default()
+        },
+    );
+    Mats {
+        floor,
+        ceil,
+        water,
+        metal,
+        glass,
+        mirror,
+        nyan,
+        marble,
+        gold,
+        strip,
+        signs,
+        ads,
+        bench,
+        plant,
+        pot,
+        bun,
+        sausage,
+        mustard,
+        plate,
+    }
+}
+
+fn build_audio(sources: &mut ResMut<Assets<AudioSource>>) -> (Sfx, Music, Handle<AudioSource>, Handle<AudioSource>) {
+    let mut add = |bytes: Vec<u8>| sources.add(AudioSource { bytes: bytes.into() });
+    let sfx = Sfx {
+        pickup: add(synth::sfx_pickup()),
+        throw_: add(synth::sfx_throw()),
+        chime: add(synth::sfx_win_chime()),
+        munch: add(synth::sfx_munch()),
+        riser: add(synth::sfx_riser()),
+        glitch: add(synth::sfx_glitch()),
+    };
+    let foot_l = add(synth::sfx_footstep(true));
+    let foot_r = add(synth::sfx_footstep(false));
+    let set = synth::muzak_set();
+    let durs = set
+        .iter()
+        .map(|b| (b.len() - 44) as f32 / (44100.0 * 2.0 * 2.0))
+        .collect();
+    let loops = set.into_iter().map(|b| add(b)).collect();
+    let music = Music {
+        loops,
+        durs,
+        current: 0,
+        cur_ent: None,
+        cur_spawn: 0.0,
+        fading: Vec::new(),
+    };
+    (sfx, music, foot_l, foot_r)
+}
+
+// ---------------------------------------------------------------- startup ----
+
+#[derive(Resource)]
+struct NewDream(Option<u64>);
+
+fn setup_dream(
+    mut commands: Commands,
+    mut images: ResMut<Assets<Image>>,
+    mut smats: ResMut<Assets<StandardMaterial>>,
+    mut sources: ResMut<Assets<AudioSource>>,
+) {
+    let seed = 0xC0FFEE ^ (std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_nanos() as u64)
+        .unwrap_or(0x51A7)
+        & 0xFFFF_FFFF_0000);
+    let mats = build_mats(&mut images, &mut smats, seed);
+    let (sfx, music, foot_l, foot_r) = build_audio(&mut sources);
+    commands.insert_resource(mats);
+    commands.insert_resource(sfx);
+    commands.insert_resource(music);
+    commands.insert_resource(WorldMats::default());
+    commands.insert_resource(NewDream(Some(seed)));
+    commands.insert_resource(Run::new(seed, foot_l, foot_r));
+    commands.insert_resource(ClearColor(Color::srgb(0.03, 0.01, 0.06)));
+    spawn_ui_root(&mut commands, &mut images);
+}
+
+fn spawn_ui_root(commands: &mut Commands, images: &mut ResMut<Assets<Image>>) {
+    let vig = world::tex_rgba(images, 256, 256, texturegen::vignette(), true);
+    commands
+        .spawn(Node {
+            position_type: PositionType::Absolute,
+            width: Val::Percent(100.0),
+            height: Val::Percent(100.0),
+            ..default()
+        })
+        .insert(Pickable::IGNORE)
+        .with_children(|ui| {
+            // vignette overlay
+            ui.spawn((
+                ImageNode {
+                    image: vig,
+                    ..default()
+                },
+                Node {
+                    position_type: PositionType::Absolute,
+                    width: Val::Percent(100.0),
+                    height: Val::Percent(100.0),
+                    ..default()
+                },
+                FocusPolicy::Pass,
+            ));
+            // black fade overlay
+            ui.spawn((
+                Name::new("fade"),
+                BackgroundColor(Color::srgba(0.0, 0.0, 0.0, 1.0)),
+                FadeNode,
+                Node {
+                    position_type: PositionType::Absolute,
+                    width: Val::Percent(100.0),
+                    height: Val::Percent(100.0),
+                    ..default()
+                },
+                FocusPolicy::Pass,
+                GlobalZIndex(40),
+            ));
+            // prompt line (bottom center)
+            ui.spawn((
+                Name::new("prompt"),
+                Node {
+                    position_type: PositionType::Absolute,
+                    bottom: Val::Px(90.0),
+                    left: Val::Percent(0.0),
+                    right: Val::Percent(0.0),
+                    justify_content: JustifyContent::Center,
+                    ..default()
+                },
+                FocusPolicy::Pass,
+                GlobalZIndex(41),
+            ))
+            .with_child((
+                Text::new(""),
+                TextFont {
+                    font_size: FontSize::Px(26.0),
+                    ..default()
+                },
+                TextColor(Color::srgba(1.0, 0.9, 0.97, 0.95)),
+            ));
+            // toast (top center)
+            ui.spawn((
+                Name::new("toast"),
+                Node {
+                    position_type: PositionType::Absolute,
+                    top: Val::Px(60.0),
+                    left: Val::Percent(0.0),
+                    right: Val::Percent(0.0),
+                    justify_content: JustifyContent::Center,
+                    ..default()
+                },
+                FocusPolicy::Pass,
+                GlobalZIndex(41),
+            ))
+            .with_child((
+                Text::new(""),
+                TextFont {
+                    font_size: FontSize::Px(22.0),
+                    ..default()
+                },
+                TextColor(Color::srgba(1.0, 0.85, 0.95, 0.9)),
+            ));
+        });
+}
+
+/// build/rebuild the world when NewDream is pending
+fn build_pending(
+    mut commands: Commands,
+    mut nd: ResMut<NewDream>,
+    mut images: ResMut<Assets<Image>>,
+    mut meshes: ResMut<Assets<Mesh>>,
+    mut smats: ResMut<Assets<StandardMaterial>>,
+    mats: Res<Mats>,
+    mut wm: ResMut<WorldMats>,
+    mut obstacles: ResMut<Obstacles>,
+    world: Query<Entity, With<WorldRoot>>,
+    run: Option<Res<Run>>,
+    mut players: Query<&mut Transform, With<Player>>,
+) {
+    let Some(seed) = nd.0.take() else { return };
+    for e in &world {
+        commands.entity(e).despawn();
+    }
+    // spawn or reset player+camera at the start pose (facing forward tangent).
+    // Player is NOT a child of WorldRoot, so it survives world respawn.
+    // boundary between sections: the ring midline is clear of center props (fountains sit at section centers)
+    let (sx, sz) = arc_point(0.0, R_MID);
+    let (sx, sz) = match std::env::var("DREAMMALL_SPAWN") {
+        Ok(s) => {
+            let mut it = s.split(',');
+            (it.next().unwrap().parse().unwrap(), it.next().unwrap().parse().unwrap())
+        }
+        Err(_) => (sx, sz),
+    };
+    let start = Transform::from_xyz(sx, EYE_H, sz);
+    match players.single_mut() {
+        Ok(mut ptf) => *ptf = start,
+        Err(_) => {
+            commands.spawn((
+                Player,
+                Name::new("player"),
+                start,
+                children![(
+                    Cam,
+                    Camera3d::default(),
+                    DistanceFog::default(),
+                    bevy::camera::visibility::NoCpuCulling,
+                )],
+            ));
+        }
+    }
+    let (fl, fr) = run
+        .map(|r| (r.foot_l.clone(), r.foot_r.clone()))
+        .unwrap_or_default();
+    let mut r = Run::new(seed, fl, fr);
+    r.fade = 1.0; // fade in from black
+    // spawn at angle 0 facing the forward tangent (tangent at 0 = +X = heading 90)
+    r.theta_prev = 0.0;
+    r.heading = 90.0;
+    if std::env::var("DREAMMALL_PASS").is_ok() {
+        r.pass = 1;
+        r.mutate_flag = true;
+    }
+    commands.insert_resource(r);
+    *LAP.lock().unwrap() = 0.0;
+    world::build_world(
+        &mut commands,
+        &mut meshes,
+        &mut images,
+        &mut smats,
+        &mats,
+        &mut obstacles,
+        &mut wm,
+        seed,
+    );
+}
+
+// ---------------------------------------------------------------- player ----
+
+fn player_input(
+    time: Res<Time>,
+    keys: Res<ButtonInput<KeyCode>>,
+    _mouse: Res<ButtonInput<MouseButton>>,
+    mut mraw: MessageReader<MouseMotion>,
+    mut run: ResMut<Run>,
+    mut q: Query<&mut Transform, With<Player>>,
+    mut cam: Query<&mut Transform, (With<Cam>, Without<Player>)>,
+    mut fog: Query<&mut DistanceFog>,
+    _sfx: Res<Sfx>,
+    mut commands: Commands,
+    obstacles: Res<Obstacles>,
+) {
+    let dt = time.delta_secs().min(0.05);
+    run.clock += dt;
+
+    // mouse look (only while grabbed and not on the ending screen)
+    let mut dx = 0.0f32;
+    let mut dy = 0.0f32;
+    if run.locked {
+        for m in mraw.read() {
+            dx += m.delta.x;
+            dy += m.delta.y;
+        }
+    } else {
+        mraw.clear();
+    }
+    run.heading += dx * 0.12;
+    run.pitch = (run.pitch - dy * 0.12).clamp(-85.0, 85.0);
+
+    let Ok(mut tf) = q.single_mut() else { return };
+    if (run.clock * 2.0) as u32 != ((run.clock - dt) * 2.0) as u32 {
+        eprintln!("DMDBG pos {:.2},{:.2} y{:.2} h{:.1} penny{} mode{:?}", tf.translation.x, tf.translation.z, tf.translation.y, run.heading, run.has_penny, run.mode);
+    }
+
+    if run.mode == Mode::Walking {
+        let mut fwd = 0.0f32;
+        let mut strafe = 0.0f32;
+        if keys.pressed(KeyCode::KeyW) || keys.pressed(KeyCode::ArrowUp) {
+            fwd += 1.0;
+        }
+        // NOTE: no backward walking, ever. ArrowDown is deliberately unwired.
+        if keys.pressed(KeyCode::KeyA) || keys.pressed(KeyCode::ArrowLeft) {
+            strafe -= 1.0;
+        }
+        if keys.pressed(KeyCode::KeyD) || keys.pressed(KeyCode::ArrowRight) {
+            strafe += 1.0;
+        }
+        let moving = fwd != 0.0 || strafe != 0.0;
+        if moving {
+            run.idle = 0.0;
+        } else {
+            run.idle += dt;
+        }
+        let h = run.heading.to_radians();
+        let f = Vec3::new(h.sin(), 0.0, h.cos());
+        let rt = Vec3::new(h.cos(), 0.0, -h.sin());
+        let speed = 3.4;
+        let mut vel = (f * fwd + rt * strafe).normalize_or_zero() * speed;
+        // gentle pressure to keep walking
+        if run.idle > 15.0 {
+            vel += f * 0.9;
+        }
+        let mut p = tf.translation;
+        p.x += vel.x * dt;
+        p.z += vel.z * dt;
+        // ring clamp
+        let r = (p.x * p.x + p.z * p.z).sqrt().max(1e-4);
+        if r < WALK_IN || r > WALK_OUT {
+            let rc = r.clamp(WALK_IN, WALK_OUT);
+            p.x *= rc / r;
+            p.z *= rc / r;
+        }
+        // obstacle push-out
+        for (c, rad) in obstacles.circles.iter() {
+            let d = Vec2::new(p.x - c.x, p.z - c.y);
+            let dl = d.length();
+            if dl < *rad + 0.35 && dl > 1e-4 {
+                let push = *rad + 0.35 - dl;
+                p.x += d.x / dl * push;
+                p.z += d.y / dl * push;
+            }
+        }
+        // footstep audio by distance
+        let step = vel.length() * dt;
+        run.dist_since_step += step;
+        if run.dist_since_step > 2.0 && moving {
+            run.dist_since_step = 0.0;
+            run.step_flip = !run.step_flip;
+            let hnd = if run.step_flip { run.foot_l.clone() } else { run.foot_r.clone() };
+            commands.spawn((
+                AudioPlayer(hnd),
+                PlaybackSettings {
+                    mode: PlaybackMode::Despawn,
+                    volume: Volume::Linear(0.5),
+                    ..default()
+                },
+                Transform::from_translation(p),
+            ));
+        }
+        tf.translation = p;
+        // lap accumulation: theta = atan2(x,z); forward increases theta
+        let theta = p.x.atan2(p.z).to_degrees();
+        let delta = angle_delta(run.theta_prev, theta);
+        if delta > 0.0 {
+            *LAP.lock().unwrap() += delta;
+        }
+        run.theta_prev = theta;
+        {
+            let mut lap = LAP.lock().unwrap();
+            if *lap >= 360.0 {
+                *lap -= 360.0;
+                run.pass += 1;
+                run.mutate_flag = true;
+            }
+        }
+        // fog normal
+        if let Ok(mut f) = fog.single_mut() {
+            f.color = Color::srgb(0.16, 0.08, 0.2);
+            f.falloff = FogFalloff::Exponential { density: 0.018 };
+        }
+    } else {
+        // ---- flight: free 6DOF, no collision ----
+        let h = run.heading.to_radians();
+        let p = run.pitch.to_radians();
+        let fwd = Vec3::new(
+            h.sin() * p.cos(),
+            p.sin(),
+            h.cos() * p.cos(),
+        );
+        let rt = Vec3::new(h.cos(), 0.0, -h.sin());
+        let mut vel = Vec3::ZERO;
+        if keys.pressed(KeyCode::KeyW) {
+            vel += fwd;
+        }
+        if keys.pressed(KeyCode::KeyS) {
+            vel -= fwd;
+        }
+        if keys.pressed(KeyCode::KeyA) {
+            vel -= rt;
+        }
+        if keys.pressed(KeyCode::KeyD) {
+            vel += rt;
+        }
+        if keys.pressed(KeyCode::Space) {
+            vel.y += 1.0;
+        }
+        if keys.pressed(KeyCode::ShiftLeft) || keys.pressed(KeyCode::ShiftRight) {
+            vel.y -= 1.0;
+        }
+        if vel.length_squared() > 0.0 {
+            tf.translation += vel.normalize() * 6.5 * dt;
+        }
+        if keys.pressed(KeyCode::KeyQ) {
+            run.roll += 60.0 * dt;
+        }
+        if keys.pressed(KeyCode::KeyE) {
+            run.roll -= 60.0 * dt;
+        }
+        if let Ok(mut f) = fog.single_mut() {
+            f.color = Color::srgb(0.85, 0.15, 0.75);
+            f.falloff = FogFalloff::Exponential { density: 0.012 };
+        }
+    }
+
+    // camera: child of player? player root holds position; camera local rot = pitch/roll
+    if let Ok(mut ctf) = cam.single_mut() {
+        ctf.rotation = Quat::from_rotation_z(run.roll.to_radians())
+            * Quat::from_rotation_x(run.pitch.to_radians());
+    }
+    // bevy cameras look down local -Z: +180 deg aligns view with heading
+    tf.rotation = Quat::from_rotation_y((run.heading + 180.0).to_radians());
+}
+
+// camera transform + bobbing handled here (child of player root)
+fn camera_rig(
+    time: Res<Time>,
+    run: Res<Run>,
+    mut cam: Query<&mut Transform, (With<Cam>, Without<Player>)>,
+) {
+    let Ok(mut ctf) = cam.single_mut() else { return };
+    let bob = if run.mode == Mode::Walking && (run.idle < 0.1) {
+        (time.elapsed_secs() * 9.0).sin() * 0.03
+    } else {
+        0.0
+    };
+    ctf.translation = Vec3::new(0.0, bob, 0.0);
+}
+
+// ---------------------------------------------------------------- cursor ----
+
+fn cursor_ctrl(
+    mut co: Query<&mut CursorOptions, With<PrimaryWindow>>,
+    mouse: Res<ButtonInput<MouseButton>>,
+    keys: Res<ButtonInput<KeyCode>>,
+    gs: Res<State<GS>>,
+    mut run: ResMut<Run>,
+) {
+    let Ok(mut co) = co.single_mut() else { return };
+    if *gs.get() != GS::Dreaming {
+        if run.locked {
+            co.grab_mode = CursorGrabMode::None;
+            run.locked = false;
+        }
+        return;
+    }
+    // click to grab; Escape releases (but does NOT quit - quit is only the ending screen)
+    if mouse.just_pressed(MouseButton::Left) && !run.locked {
+        co.grab_mode = CursorGrabMode::Locked;
+        run.locked = true;
+    }
+    if keys.just_pressed(KeyCode::Escape) && run.locked {
+        co.grab_mode = CursorGrabMode::None;
+        run.locked = false;
+    }
+}
+
+// ------------------------------------------------------------------- wins ----
+
+fn interactions(
+    time: Res<Time>,
+    keys: Res<ButtonInput<KeyCode>>,
+    mut run: ResMut<Run>,
+    players: Query<&Transform, With<Player>>,
+    penny: Query<(Entity, &GlobalTransform), With<Penny>>,
+    hotdog: Query<&GlobalTransform, With<Hotdog>>,
+    fountains: Query<&Fountain>,
+    mut commands: Commands,
+    sfx: Res<Sfx>,
+) {
+    let _dt = time.delta_secs().min(0.05);
+    let Ok(ptf) = players.single() else { return };
+    let ppos = ptf.translation;
+    run.prompt = None;
+    let press_e = keys.just_pressed(KeyCode::KeyE);
+    if press_e {
+        let dp: Vec<f32> = penny.iter().map(|(_, t)| t.translation().distance(ptf.translation)).collect();
+        eprintln!("DMDBG E-PRESS has_penny{} dists{:?}", run.has_penny, dp);
+    }
+
+    // penny pickup / throw
+    if !run.has_penny {
+        for (e, t) in &penny {
+            let d = t.translation().distance(ppos);
+            if d < 2.2 {
+                run.prompt = Some("PICK UP THE PENNY  [E]".into());
+                if press_e {
+                    eprintln!("DMDBG PICKUP at {:.2},{:.2}", ppos.x, ppos.z);
+                    run.has_penny = true;
+                    commands.entity(e).despawn();
+                    commands.spawn((
+                        AudioPlayer(sfx.pickup.clone()),
+                        PlaybackSettings {
+                            mode: PlaybackMode::Despawn,
+                            ..default()
+                        },
+                    ));
+                    toast(&mut run, "YOU TAKE THE PENNY. IT IS WARM.");
+                }
+            }
+        }
+    } else {
+        for f in &fountains {
+            let d = Vec2::new(f.center.x - ppos.x, f.center.z - ppos.z).length();
+            if d < 4.0 && ppos.y < 2.5 {
+                run.prompt = Some("THROW THE PENNY  [E]".into());
+                if press_e {
+                    eprintln!("DMDBG THROW at {:.2},{:.2} d{:.2}", ppos.x, ppos.z, d);
+                    run.has_penny = false;
+                    commands.spawn((
+                        AudioPlayer(sfx.throw_.clone()),
+                        PlaybackSettings {
+                            mode: PlaybackMode::Despawn,
+                            ..default()
+                        },
+                    ));
+                    trigger_win(&mut run, WinKind::Water, &sfx);
+                }
+            }
+        }
+    }
+
+    // hotdog pickup / eat
+    if run.hotdog_spawned {
+    for t in &hotdog {
+        if t.translation().distance(ppos) < 2.0 {
+            if !run.has_hotdog {
+                run.prompt = Some("TAKE THE HOTDOG  [E]".into());
+                if press_e {
+                    run.has_hotdog = true;
+                    commands.spawn((
+                        AudioPlayer(sfx.pickup.clone()),
+                        PlaybackSettings {
+                            mode: PlaybackMode::Despawn,
+                            ..default()
+                        },
+                    ));
+                    toast(&mut run, "IT IS STILL HOT. IT SHOULD NOT BE.");
+                }
+            } else if !run.hotdog_eaten {
+                run.prompt = Some("EAT THE HOTDOG  [E]".into());
+                if press_e {
+                    run.hotdog_eaten = true;
+                    commands.spawn((
+                        AudioPlayer(sfx.munch.clone()),
+                        PlaybackSettings {
+                            mode: PlaybackMode::Despawn,
+                            ..default()
+                        },
+                    ));
+                    // enter flight
+                    run.mode = Mode::Flying;
+                    run.roll = 0.0;
+                    toast(&mut run, "YOU ARE LIGHT.");
+                    commands.spawn((
+                        AudioPlayer(sfx.riser.clone()),
+                        PlaybackSettings {
+                            mode: PlaybackMode::Despawn,
+                            volume: Volume::Linear(0.8),
+                            ..default()
+                        },
+                    ));
+                }
+            }
+        }
+    }
+    }
+
+    // flight wins: rise past y>55, or dive into fountain water
+    if run.mode == Mode::Flying && run.won.is_none() {
+        if ppos.y > 55.0 {
+            trigger_win(&mut run, WinKind::Flight, &sfx);
+        } else if ppos.y < 1.0 && ppos.y > 0.2 {
+            for f in &fountains {
+                let d = Vec2::new(f.center.x - ppos.x, f.center.z - ppos.z).length();
+                if d < 4.0 {
+                    trigger_win(&mut run, WinKind::Water, &sfx);
+                }
+            }
+        }
+    }
+
+    // idle pressure toast
+    if run.idle > 6.0 && run.toast.is_none() && run.won.is_none() && run.mode == Mode::Walking {
+        let idx = (run.pass as usize + run.idle as usize) % TOASTS.len();
+        toast(&mut run, TOASTS[idx]);
+    }
+}
+
+static LAP: std::sync::Mutex<f32> = std::sync::Mutex::new(0.0);
+
+fn trigger_win(run: &mut Run, kind: WinKind, sfx: &Sfx) {
+    if run.won.is_some() {
+        return;
+    }
+    eprintln!("DMDBG VICTORY {:?}", kind);
+    run.won = Some(kind);
+    run.won_timer = 0.0;
+    commands_spawn_chime(sfx);
+}
+
+fn commands_spawn_chime(sfx: &Sfx) {
+    // chime is spawned by win_fade via Commands; store request instead
+    WIN_CHIME.with(|c| *c.borrow_mut() = Some(sfx.chime.clone()));
+}
+
+thread_local! {
+    static WIN_CHIME: std::cell::RefCell<Option<Handle<AudioSource>>> = const { std::cell::RefCell::new(None) };
+    static OBSTACLES_TL: std::cell::RefCell<Vec<(Vec2, f32)>> = const { std::cell::RefCell::new(Vec::new()) };
+}
+
+fn win_fade(
+    time: Res<Time>,
+    mut run: ResMut<Run>,
+    mut commands: Commands,
+    mut next: ResMut<NextState<GS>>,
+    gs: Res<State<GS>>,
+) {
+    let dt = time.delta_secs().min(0.05);
+    // fade in from black on fresh dream
+    if run.won.is_none() && run.fade > 0.0 {
+        run.fade = (run.fade - dt / 1.2).max(0.0);
+    }
+    if let Some(kind) = run.won {
+        run.won_timer += dt;
+        run.fade = (run.won_timer / 1.5).min(1.0);
+        if run.won_timer > 1.5 && *gs.get() == GS::Dreaming {
+            run.fade = 1.0;
+            let _ = kind;
+            eprintln!("DMDBG ->ENDED gs{:?}", gs.get());
+            next.set(GS::Ended);
+        }
+    }
+    // apply fade + handle pending chime
+    if let Some(chime) = WIN_CHIME.with(|c| c.borrow_mut().take()) {
+        commands.spawn((
+            AudioPlayer(chime),
+            PlaybackSettings {
+                mode: PlaybackMode::Despawn,
+                volume: Volume::Linear(0.9),
+                ..default()
+            },
+        ));
+    }
+}
+
+// simpler: dedicated fade applier
+fn fade_apply(run: Res<Run>, mut q: Query<&mut BackgroundColor, With<FadeNode>>) {
+    for mut bg in q.iter_mut() {
+        bg.0 = Color::srgba(0.0, 0.0, 0.0, run.fade);
+    }
+}
+
+#[derive(Component)]
+struct FadeNode;
+
+// ---------------------------------------------------------------- mutation ----
+
+fn mutation(
+    mut run: ResMut<Run>,
+    mut wm: ResMut<WorldMats>,
+    mut mats_q: Query<(&Sec, &Role, Option<&Slot>, &mut Transform, Option<&mut MeshMaterial3d<StandardMaterial>>, Option<&mut Visibility>, Option<&mut PointLight>), With<Role>>,
+    mut hotdogs: Query<&mut Visibility, (With<Hotdog>, Without<Role>)>,
+    mats: Res<Mats>,
+    sfx: Res<Sfx>,
+    mut commands: Commands,
+) {
+    if !std::mem::take(&mut run.mutate_flag) {
+        return;
+    }
+    let seed = run.seed;
+    let pass = run.pass;
+    commands.spawn((
+        AudioPlayer(sfx.glitch.clone()),
+        PlaybackSettings {
+            mode: PlaybackMode::Despawn,
+            volume: Volume::Linear(0.6),
+            ..default()
+        },
+    ));
+    toast(&mut run, "YOU HAVE BEEN HERE BEFORE. YOU HAVEN'T.");
+    let mut side_changes = 0u32;
+    for (sec, m, slot, mut tf, mmat, vis, light) in mats_q.iter_mut() {
+        let i = sec.0;
+        let h = |k: u64| hash2(hash2(seed, (pass as u64) * 131 + i as u64), k);
+        match *m {
+            Role::Wall => {
+                let v = (h(3) % 3) as usize;
+                if wm.cur_variant[i] != v {
+                    wm.cur_variant[i] = v;
+                    if let Some(mut mm) = mmat {
+                        *mm = MeshMaterial3d(wm.wall_variants[i][v].clone());
+                    }
+                }
+            }
+            Role::Sign => {
+                let s = slot.map(|s| s.0).unwrap_or(0);
+                let ns = ((h(5) as usize + s) % 12.max(1)) % mats.signs.len();
+                if let Some(mut mm) = mmat {
+                    *mm = MeshMaterial3d(mats.signs[ns].clone());
+                }
+                if h(7) % 4 == 0 {
+                    tf.scale.x = -tf.scale.x;
+                }
+            }
+            Role::Ad => {
+                let s = slot.map(|s| s.0).unwrap_or(0);
+                let ns = ((h(11) as usize + s * 3) % 12.max(1)) % mats.ads.len();
+                if let Some(mut mm) = mmat {
+                    *mm = MeshMaterial3d(mats.ads[ns].clone());
+                }
+            }
+            Role::Light => {
+                if let Some(mut pl) = light {
+                    let hue = (h(13) % 1000) as f32 / 1000.0;
+                    pl.color = hsv_rgba(hue as f64, 0.45, 1.0);
+                }
+            }
+            Role::Side => {
+                if side_changes < 6 && h(17) % 3 == 0 {
+                    // mirror radius about midline, clamp inside corridor
+                    let x = tf.translation.x;
+                    let z = tf.translation.z;
+                    let r = (x * x + z * z).sqrt().max(1e-4);
+                    let nr = (2.0 * MID - r).clamp(R_IN + 1.4, R_OUT - 1.4);
+                    tf.translation.x = x * nr / r;
+                    tf.translation.z = z * nr / r;
+                    side_changes += 1;
+                }
+            }
+            Role::Water => {}
+        }
+        // hotdog reveal handled below via vis
+        let _ = &vis;
+    }
+    // hotdog reveal on pass>=1
+    if pass >= 1 && !run.hotdog_spawned {
+        run.hotdog_spawned = true;
+        for mut v in &mut hotdogs {
+            *v = Visibility::Visible;
+        }
+        toast(&mut run, "SOMETHING NEW IS ON A TABLE SOMEWHERE.");
+    }
+    world::rebuild_obstacles(&mut commands);
+}
+
+// ---------------------------------------------------------------- obstacles ----
+
+fn rebuild_obstacles_sys(
+    mut commands: Commands,
+    tick: Res<ObstacleBuildTick>,
+    mut obstacles: ResMut<Obstacles>,
+    props: Query<(&Prop, &Obs, &SectionRoot), With<Obs>>,
+    roots: Query<(&SectionRoot, &GlobalTransform)>,
+    hotdogs: Query<&Transform, With<Hotdog>>,
+    run: Res<Run>,
+) {
+    let _ = tick;
+    obstacles.clear();
+    for (root, gt) in &roots {
+        let _ = (root, gt);
+    }
+    // world positions: section roots are rotated; use stored Prop r/off + section center
+    for (prop, obs, sec) in &props {
+        let c = section_center(sec.id);
+        let (x, z) = arc_point(c + prop.off, prop.r);
+        obstacles.add(x, z, obs.0);
+    }
+    // fountain centers block
+    for f in hotdogs.iter() {
+        let _ = f;
+    }
+    let _ = run;
+    let _ = &mut commands;
+}
+
+// ------------------------------------------------------------------ music ----
+
+fn music_sched(
+    time: Res<Time>,
+    run: ResMut<Run>,
+    mut music: ResMut<Music>,
+    mut commands: Commands,
+    mut sources: ResMut<Assets<AudioSource>>,
+    mut sinks: Query<(&mut AudioSink, Entity)>,
+) {
+    let _dt = time.delta_secs().min(0.05);
+    let clock = run.clock;
+    // start first loop
+    if music.cur_ent.is_none() && !music.loops.is_empty() {
+        let e = spawn_loop(&mut commands, &music, 0.45);
+        music.cur_ent = Some(e);
+        music.cur_spawn = clock;
+    }
+    // schedule next loop variant 1.5s before current ends
+    if let (Some(ent), Some(dur)) = (music.cur_ent, music.durs.get(music.current)) {
+        let _ = ent;
+        let elapsed = clock - music.cur_spawn;
+        if elapsed > dur - 1.5 {
+            // pick different variant
+            let n = music.loops.len();
+            let mut next =
+                (music.current + 1 + (rand_u32(clock.to_bits() as u64) as usize) % (n - 1)) % n;
+            if next == music.current {
+                next = (next + 1) % n;
+            }
+            music.current = next;
+            let e = spawn_loop(&mut commands, &music, 0.45);
+            music.cur_ent = Some(e);
+            music.cur_spawn = clock;
+            // fade old one: find all audio sinks not in the new spawn... simplest: fade all existing
+            for (sink, e) in sinks.iter_mut() {
+                let _ = sink;
+                music.fading.push((e, clock));
+            }
+        }
+    }
+    // ramp fading sinks down
+    let mut done = Vec::new();
+    for (e, t0) in music.fading.iter_mut() {
+        let t = (clock - *t0) / 1.5;
+        if let Ok((mut sink, _)) = sinks.get_mut(*e) {
+            let v = (0.45 * (1.0 - t)).max(0.0);
+            sink.set_volume(Volume::Linear(v));
+        }
+        if t >= 1.0 {
+            done.push(*e);
+        }
+    }
+    for e in done {
+        music.fading.retain(|(x, _)| *x != e);
+        commands.entity(e).despawn();
+    }
+    let _ = &mut sources;
+}
+
+fn rand_u32(x: u64) -> u32 {
+    let mut h = x.wrapping_mul(0x9E3779B97F4A7C15);
+    h ^= h >> 31;
+    h.wrapping_mul(0xBF58476D1CE4E5B9) as u32
+}
+
+fn spawn_loop(commands: &mut Commands, music: &Music, vol: f32) -> Entity {
+    commands
+        .spawn((
+            AudioPlayer(music.loops[music.current].clone()),
+            PlaybackSettings {
+                mode: PlaybackMode::Once,
+                volume: Volume::Linear(vol),
+                ..default()
+            },
+        ))
+        .id()
+}
+
+// ---------------------------------------------------------------- ending UI ----
+
+fn spawn_ending_ui(
+    mut commands: Commands,
+    run: Res<Run>,
+    winent: ResMut<WinShown>,
+) {
+    eprintln!("DMDBG spawn_ending_ui winent{:?}", winent.0);
+    let msg = match winent.0 {
+        Some(WinKind::Water) => "THE WATER TAKES YOU DOWN, WARM AND SWEET.\nYOU WAKE UP, CONGRATULATIONS.",
+        Some(WinKind::Flight) => "YOU RISE THROUGH THE GLASS ROOF.\nTHE PARKING LOT IS AN OCEAN OF MIST.\nYOU WAKE UP, CONGRATULATIONS.",
+        None => "YOU WAKE UP, CONGRATULATIONS.",
+    };
+    commands
+        .spawn((
+            Node {
+                position_type: PositionType::Absolute,
+                width: Val::Percent(100.0),
+                height: Val::Percent(100.0),
+                align_items: AlignItems::Center,
+                justify_content: JustifyContent::Center,
+                flex_direction: FlexDirection::Column,
+                row_gap: Val::Px(28.0),
+                ..default()
+            },
+            BackgroundColor(Color::srgba(1.0, 0.0, 0.0, 1.0)),
+            GlobalZIndex(50),
+            DespawnOnExit(GS::Ended),
+            DbgEnd,
+        ))
+        .with_children(|ui| {
+            ui.spawn((
+                Text::new(msg),
+                TextFont {
+                    font_size: FontSize::Px(34.0),
+                    ..default()
+                },
+                TextColor(Color::srgb(0.0, 1.0, 0.0)),
+                TextLayout {
+                    justify: Justify::Center,
+                    linebreak: LineBreak::WordBoundary,
+                    ..default()
+                },
+            ));
+            ui.spawn((
+                Button,
+                Node {
+                    width: Val::Px(280.0),
+                    height: Val::Px(64.0),
+                    justify_content: JustifyContent::Center,
+                    align_items: AlignItems::Center,
+                    ..default()
+                },
+                BackgroundColor(Color::srgb(0.45, 0.15, 0.5)),
+                SleepBtn,
+            ))
+            .with_child((
+                Text::new("GO BACK TO SLEEP"),
+                TextFont {
+                    font_size: FontSize::Px(24.0),
+                    ..default()
+                },
+                TextColor(Color::WHITE),
+            ));
+            ui.spawn((
+                Button,
+                Node {
+                    width: Val::Px(280.0),
+                    height: Val::Px(64.0),
+                    justify_content: JustifyContent::Center,
+                    align_items: AlignItems::Center,
+                    ..default()
+                },
+                BackgroundColor(Color::srgb(0.25, 0.1, 0.3)),
+                ExitBtn,
+            ))
+            .with_child((
+                Text::new("EXIT"),
+                TextFont {
+                    font_size: FontSize::Px(24.0),
+                    ..default()
+                },
+                TextColor(Color::WHITE),
+            ));
+        });
+    let _ = run;
+}
+
+#[derive(Resource, Default)]
+struct WinShown(Option<WinKind>);
+
+fn capture_win(mut w: ResMut<WinShown>, run: Res<Run>) {
+    if w.0.is_none() {
+        w.0 = run.won;
+    }
+}
+
+fn sleep_btn(
+    _tr: On<Activate>,
+    mut next: ResMut<NextState<GS>>,
+    mut nd: ResMut<NewDream>,
+    mut w: ResMut<WinShown>,
+) {
+    w.0 = None;
+    nd.0 = Some(0xC0FFEE ^ (std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_nanos() as u64)
+        .unwrap_or(0x51A7)
+        & 0xFFFF_FFFF_0000));
+    next.set(GS::Dreaming);
+}
+
+fn exit_btn(_tr: On<Activate>, mut writer: MessageWriter<AppExit>) {
+    writer.write(AppExit::Success);
+}
+
+// ----------------------------------------------------------------- toasts ----
+
+fn ui_update(
+    time: Res<Time>,
+    mut run: ResMut<Run>,
+    mut texts: Query<(&Name, &Children)>,
+    mut textq: Query<&mut Text>,
+) {
+    let dt = time.delta_secs().min(0.05);
+    if let Some((_, t)) = run.toast.as_mut() {
+        *t -= dt;
+        if *t <= 0.0 {
+            run.toast = None;
+        }
+    }
+    let prompt = run.prompt.clone().unwrap_or_default();
+    let toast = run.toast.as_ref().map(|(m, _)| m.clone()).unwrap_or_default();
+    for (name, kids) in texts.iter_mut() {
+        let want = match name.as_str() {
+            "prompt" => &prompt,
+            "toast" => &toast,
+            _ => continue,
+        };
+        for k in kids.iter() {
+            if let Ok(mut t) = textq.get_mut(k) {
+                if t.0 != *want {
+                    t.0 = want.clone();
+                }
+            }
+        }
+    }
+}
+
+// ---------------------------------------------------------------- glue sys ----
+
+/// sync obstacles TL for hot path collision
+fn obstacles_sync(obstacles: Res<Obstacles>) {
+    OBSTACLES_TL.with(|o| *o.borrow_mut() = obstacles.circles.clone());
+}
+
+pub fn build(app: &mut App) {
+    app.add_plugins(DefaultPlugins.set(WindowPlugin {
+        primary_window: Some(Window {
+            title: "DREAM MALL".into(),
+            resolution: (1600, 900).into(),
+            present_mode: bevy::window::PresentMode::AutoVsync,
+            ..default()
+        }),
+        ..default()
+    }));
+    app.init_resource::<ObstacleBuildTick>();
+    app.init_resource::<Obstacles>();
+    app.init_resource::<WinShown>();
+    app.init_state::<GS>();
+    app.add_systems(OnEnter(GS::Dreaming), setup_dream);
+    app.add_systems(
+        Update,
+        (
+            build_pending.run_if(resource_exists::<NewDream>),
+            obstacles_sync,
+            player_input
+                .after(build_pending)
+                .before(bevy::transform::TransformSystems::Propagate),
+            camera_rig.after(player_input),
+            cursor_ctrl,
+            interactions.after(player_input),
+            mutation.after(interactions),
+            rebuild_obstacles_sys.run_if(resource_changed::<ObstacleBuildTick>),
+            music_sched.after(player_input),
+            ui_update,
+            capture_win,
+            win_fade,
+            fade_apply.after(win_fade),
+            nyan_anim,
+            float_drift,
+        )
+            .run_if(in_state(GS::Dreaming)),
+    );
+    app.add_systems(OnEnter(GS::Ended), (capture_win2, spawn_ending_ui));
+    app.add_observer(sleep_btn);
+    app.add_observer(exit_btn);
+    // ending screen: Escape quits
+    app.add_systems(Update, exit_on_escape.run_if(in_state(GS::Ended)));
+    app.add_systems(Update, dbg_end.run_if(in_state(GS::Ended)));
+    app.add_systems(Update, dbg_dream.run_if(in_state(GS::Dreaming)));
+    app.add_systems(Update, force_end.run_if(in_state(GS::Dreaming)));
+    // DREAMMALL_SHOT=/path.png[:SECONDS] -> GPU-side swapchain capture (bypasses X capture)
+    if let Ok(spec) = std::env::var("DREAMMALL_SHOT") {
+        let (path, secs) = match spec.split_once(':') {
+            Some((p, s)) => (p.to_string(), s.parse::<f32>().unwrap_or(6.0)),
+            None => (spec.clone(), 6.0),
+        };
+        app.add_observer(bevy::render::view::window::screenshot::save_to_disk(path.clone()));
+        app.insert_resource(ShotReq { secs, done: false });
+        app.add_systems(Update, shot_system);
+    }
+}
+
+#[derive(Resource)]
+struct ShotReq {
+    secs: f32,
+    done: bool,
+}
+
+fn shot_system(
+    time: Res<Time>,
+    mut req: ResMut<ShotReq>,
+    mut commands: Commands,
+) {
+    if !req.done && time.elapsed_secs() >= req.secs {
+        req.done = true;
+        commands.spawn(bevy::render::view::window::screenshot::Screenshot::primary_window());
+    }
+}
+
+fn force_end(time: Res<Time>, gs: Res<State<GS>>, mut next: ResMut<NextState<GS>>) {
+    if std::env::var("DREAMMALL_END").is_ok()
+        && *gs.get() == GS::Dreaming
+        && time.elapsed_secs() > 3.0
+    {
+        next.set(GS::Ended);
+    }
+}
+
+
+fn exit_on_escape(keys: Res<ButtonInput<KeyCode>>, mut writer: MessageWriter<AppExit>) {
+    if keys.just_pressed(KeyCode::Escape) {
+        writer.write(AppExit::Success);
+    }
+}
+
+#[derive(Component)]
+struct DbgEnd;
+fn dbg_end(
+    time: Res<Time>,
+    roots: Query<(Entity, &ComputedNode, &ViewVisibility, &InheritedVisibility, Option<&ComputedUiTargetCamera>), With<DbgEnd>>,
+    kids: Query<(Entity, &ChildOf, &ComputedNode, &ViewVisibility), (Without<DbgEnd>, With<Text>)>,
+    cams: Query<Entity, With<Camera3d>>,
+    vents: Query<&VisibleEntities>,
+) {
+    if ((time.elapsed_secs() * 1.0) as u32 % 3) != 0 {
+        return;
+    }
+    for (e, cn, vv, iv, ct) in &roots {
+        eprintln!("DMDBG ENDROOT live {:?} size{:?} vis{:?} inh{:?} cam{:?}", e, cn.size(), vv.get(), iv.get(), ct.map(|c| c.get()));
+    }
+    for c in &cams {
+        eprintln!("DMDBG CAM {:?} vents{:?}", c, vents.get(c).map(|v| v.entities.len()).unwrap_or(999));
+    }
+    for (e, p, cn, vv) in &kids {
+        eprintln!("DMDBG TXT {:?} parent{:?} size{:?} vis{:?}", e, p, cn.size(), vv.get());
+    }
+}
+
+fn dbg_dream(time: Res<Time>, ui: Query<&ViewVisibility, (With<Node>, Without<Camera3d>)>) {
+    if ((time.elapsed_secs() * 1.0) as u32 % 3) != 0 {
+        return;
+    }
+    let mut n = 0;
+    let mut vis = 0;
+    for v in &ui {
+        n += 1;
+        if v.get() {
+            vis += 1;
+        }
+    }
+    eprintln!("DMDBG DREAMUI {} nodes vis {}", n, vis);
+}
+
+fn capture_win2(mut w: ResMut<WinShown>, run: Res<Run>) {
+    w.0 = run.won;
+}
+
+// ---------------------------------------------------------------- ambience ----
+
+/// nyan cat swims side-to-side across its mirror, phase-offset per mirror
+fn nyan_anim(time: Res<Time>, mut q: Query<(&NyanQuad, &mut Transform)>) {
+    let t = time.elapsed_secs();
+    for (n, mut tf) in q.iter_mut() {
+        tf.translation.x = (t * 0.8 + n.phase).sin() * 0.55;
+        tf.translation.y = 0.55 + (t * 2.3 + n.phase).sin() * 0.03;
+    }
+}
+
+/// surreal shapes beyond the atrium glass rotate on their seeded axes
+fn float_drift(time: Res<Time>, mut q: Query<(&FloatShape, &mut Transform)>) {
+    let t = time.elapsed_secs();
+    for (f, mut tf) in q.iter_mut() {
+        tf.rotation = Quat::from_axis_angle(f.axis, t * f.speed);
+    }
+}

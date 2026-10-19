@@ -152,8 +152,7 @@ pub fn sunset(seed: u64) -> Rgba {
     let r = 46.0f32;
     for y in 0..h {
         for x in 0..w {
-            let t = y as f32 / h as f32;
-            let c = if y as f32 < horizon {
+            let c = if (y as f32) < horizon {
                 // sky: deep purple -> magenta -> orange at horizon
                 let k = (y as f32 / horizon).powi(2);
                 let r0 = 30.0 + 225.0 * k;
@@ -178,15 +177,15 @@ pub fn sunset(seed: u64) -> Rgba {
         }
     }
     // sun disc with horizontal slice bands
-    for y in (horizon as u32 - r as u32 - 4.0).max(0)..=(horizon as u32).min(h - 1) {
+    for y in (horizon as u32).saturating_sub(r as u32 + 4)..=(horizon as u32).min(h - 1) {
         for x in 0..w {
             let dx = x as f32 - cx;
             let dy = y as f32 - cy;
             let d = (dx * dx + dy * dy).sqrt();
             if d < r {
-                let band_ok = (cy - y) as f32 % 9.0 > 3.5; // slice gaps lower half
+                let band_ok = (cy - y as f32) % 9.0 > 3.5; // slice gaps lower half
                 if band_ok {
-                    let k = 1.0 - (cy - y) / r;
+                    let k = 1.0 - (cy - y as f32) / r;
                     put(
                         &mut b,
                         w,
@@ -251,14 +250,14 @@ pub fn ad_poster(seed: u64, name: &str, slogan: &str) -> Rgba {
             let dx = x as f32 - cx;
             let dy = y as f32 - cy;
             let d = (dx * dx + dy * dy).sqrt();
-            if d < 40.0 && (cy - y) % 7.0 > 2.5 {
+            if d < 40.0 && (cy - y as f32) % 7.0 > 2.5 {
                 put(&mut b, w, x, y, [255, 220, 120, 255]);
             }
         }
     }
     let mut tmp = vec![0u8; (w * h * 4) as usize];
     // name band
-    for y in (96..132) {
+    for y in 96..132 {
         for x in 0..w {
             put(&mut b, w, x, y, [12, 6, 24, 255]);
         }
@@ -309,7 +308,7 @@ pub fn sign_tex(seed: u64, name: &str) -> Rgba {
         }
     }
     let scale = if name.len() > 13 { 2 } else { 3 };
-    text_to_pixels(name, scale, [255, 255, 255], [10, 6, 20], w, h, &mut b);
+    text_to_pixels(name, scale, [255, 255, 255], [10, 6, 20, 255], w, h, &mut b);
     b
 }
 
