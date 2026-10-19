@@ -1126,6 +1126,7 @@ fn spawn_ending_ui(
                 BackgroundColor(Color::srgb(0.45, 0.15, 0.5)),
                 SleepBtn,
             ))
+            .observe(sleep_btn)
             .with_child((
                 Text::new("GO BACK TO SLEEP"),
                 TextFont {
@@ -1146,6 +1147,7 @@ fn spawn_ending_ui(
                 BackgroundColor(Color::srgb(0.25, 0.1, 0.3)),
                 ExitBtn,
             ))
+            .observe(exit_btn)
             .with_child((
                 Text::new("EXIT"),
                 TextFont {
@@ -1265,8 +1267,6 @@ pub fn build(app: &mut App) {
             .run_if(in_state(GS::Dreaming)),
     );
     app.add_systems(OnEnter(GS::Ended), (capture_win2, spawn_ending_ui));
-    app.add_observer(sleep_btn);
-    app.add_observer(exit_btn);
     // ending screen: Escape quits
     app.add_systems(Update, exit_on_escape.run_if(in_state(GS::Ended)));
 }
