@@ -29,6 +29,7 @@ pub struct Run {
     pub pass: u32,
     pub mode: Mode,
     pub has_penny: bool,
+    pub penny_spawned: bool,
     pub hotdog_spawned: bool,
     pub has_hotdog: bool,
     pub hotdog_eaten: bool,
@@ -59,6 +60,7 @@ impl Run {
             mode: Mode::Walking,
             has_hotdog: false,
             has_penny: false,
+            penny_spawned: false,
             hotdog_spawned: false,
             hotdog_eaten: false,
             idle: 0.0,
@@ -99,6 +101,7 @@ pub struct Mats {
     pub marble: Handle<StandardMaterial>,
     pub gold: Handle<StandardMaterial>,
     pub strip: Handle<StandardMaterial>, // emissive light strip
+    pub glow: Handle<StandardMaterial>,  // emissive float shapes
     pub signs: Vec<Handle<StandardMaterial>>, // 12
     pub ads: Vec<Handle<StandardMaterial>>, // 12
     pub bench: Vec<Handle<StandardMaterial>>, // 4 pastel
@@ -157,6 +160,7 @@ pub enum Role {
     Wall,
     Sign,
     Ad,
+    Glass, // atrium inner glass: never mutated opaque
     Light,
     Side, // bench/table/plant: mirror r about R_MID
     Water,

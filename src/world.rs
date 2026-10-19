@@ -202,7 +202,7 @@ fn spawn_section_shell(
             Mesh3d(meshes.add(wall_band(-18.0, 18.0, R_IN, h, 8))),
             MeshMaterial3d(inner_mat),
             if kind == SectionKind::Atrium {
-                Role::Ad
+                Role::Glass
             } else {
                 Role::Wall
             },
@@ -437,6 +437,7 @@ fn spawn_food(
 ) {
     // 3 tables at deterministic slots
     let slots = [(-10.0f32, 41.6f32), (0.0, 44.4), (10.0, 41.6)];
+    let mut table_ids = [Entity::PLACEHOLDER; 3];
     for (slot, (off, r)) in slots.iter().enumerate() {
         let t = commands
             .spawn((
@@ -468,7 +469,29 @@ fn spawn_food(
             ))
             .id();
         commands.entity(t).add_children(&[top, leg]);
-        commands.entity(sec).add_child(t);
+        table_ids[slot] = t;
+    }
+    // hidden penny on a seeded table in section 2; revealed by mutation (penny_spawned)
+    if i == 2 {
+        let slot = (hash2(seed, 79) % 3) as usize;
+        let penny = commands
+            .spawn((
+                Sec(i),
+                Penny,
+                Visibility::Hidden,
+                Transform::from_xyz(0.0, 0.775, 0.0),
+            ))
+            .id();
+        let coin = commands
+            .spawn((
+                Sec(i),
+                Mesh3d(meshes.add(cyl(0.14, 0.03))),
+                MeshMaterial3d(mats.gold.clone()),
+            ))
+            .id();
+        commands.entity(penny).add_child(coin);
+        // child of the table so mutation's side-mirror moves it with the table
+        commands.entity(table_ids[slot]).add_child(penny);
     }
     // benches inner rail
     for (slot, off) in [(-16.0f32), 16.0].iter().enumerate() {
@@ -624,9 +647,9 @@ fn spawn_fountain(
     commands.entity(f).add_children(&[rim, basin, water, pillar, gold]);
     commands.entity(sec).add_child(f);
 
-    // penny on the center table of section 2's food court, or a rim ledge
+    // decorative pedestal only; the real penny sits hidden on a section 2 table
     if i == 0 {
-        // small pedestal with penny near rim
+        // small marble pedestal (decorative)
         let ped = commands
             .spawn((
                 Sec(i),
@@ -648,26 +671,6 @@ fn spawn_fountain(
             .id();
         commands.entity(ped).add_child(post);
         commands.entity(sec).add_child(ped);
-        let penny = commands
-            .spawn((
-                Sec(i),
-                Penny,
-                Prop {
-                    r: MID - 2.7,
-                    off: 0.0,
-                },
-                prop_tf(MID - 2.7, 0.0, 1.05, 0.0),
-            ))
-            .id();
-        let coin = commands
-            .spawn((
-                Sec(i),
-                Mesh3d(meshes.add(cyl(0.14, 0.03))),
-                MeshMaterial3d(mats.gold.clone()),
-            ))
-            .id();
-        commands.entity(penny).add_child(coin);
-        commands.entity(sec).add_child(penny);
     }
     let _ = seed;
 }
@@ -703,7 +706,7 @@ fn spawn_atrium(
                     .normalize(),
                 },
                 Mesh3d(meshes.add(mesh)),
-                MeshMaterial3d(mats.ads[(i + s as usize) % 12].clone()),
+                MeshMaterial3d(mats.glow.clone()),
                 Transform::from_translation(local_arc(off, r, y)),
             ))
             .id();
@@ -768,8 +771,8 @@ pub fn build_world(
         spawn_section_shell(commands, meshes, root, mats, &wm, seed, i);
     }
 
-    // penny on the food court center table (section 2) - spawn visible
-    // (a second decorative pedestal exists at fountain 0; the real pickup is here)
+    // penny: hidden on a section 2 table (spawn_food); hotdog: hidden on section 6
+    // center table; both revealed by mutation as passes advance.
     rebuild_obstacles(commands);
 }
 

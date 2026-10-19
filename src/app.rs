@@ -142,6 +142,14 @@ fn build_mats(
             ..default()
         },
     );
+    let glow = plain(
+        smats,
+        StandardMaterial {
+            base_color: Color::srgb(1.0, 0.85, 0.98),
+            emissive: LinearRgba::new(2.0, 1.1, 1.8, 1.0),
+            ..default()
+        },
+    );
     let mut signs = Vec::new();
     for name in SHOP_NAMES.iter() {
         signs.push(textured(images, smats, (256, 64, texturegen::sign_tex(seed, name)), Color::WHITE, 0.6));
@@ -223,6 +231,7 @@ fn build_mats(
         marble,
         gold,
         strip,
+        glow,
         signs,
         ads,
         bench,
@@ -377,6 +386,7 @@ fn spawn_ui_root(commands: &mut Commands, images: &mut ResMut<Assets<Image>>) {
             ));
             // controls hint (bottom left, dim)
             ui.spawn((
+                Name::new("hint"),
                 Node {
                     position_type: PositionType::Absolute,
                     bottom: Val::Px(16.0),
@@ -419,7 +429,29 @@ fn build_pending(
     // Player is NOT a child of WorldRoot, so it survives world respawn.
     // boundary between sections: the ring midline is clear of center props (fountains sit at section centers)
     let (sx, sz) = arc_point(0.0, R_MID);
-    let start = Transform::from_xyz(sx, EYE_H, sz);
+    let mut start = Transform::from_xyz(sx, EYE_H, sz);
+    // TEMP verification hook (strip before ship): spawn beside a win prop and
+    // grant its pickup state so both endings are reachable headlessly.
+    let mut heading = 90.0f32;
+    let mut give_penny = false;
+    let mut give_hotdog = false;
+    if let Ok(g) = std::env::var("DREAMMALL_GIVE") {
+        match g.as_str() {
+            "penny" => {
+                let (px, pz) = arc_point(18.0, R_MID - 2.7);
+                start = Transform::from_xyz(px, EYE_H, pz);
+                heading = 198.0;
+                give_penny = true;
+            }
+            "hotdog" => {
+                let (px, pz) = arc_point(234.0, 44.4 - 1.05);
+                start = Transform::from_xyz(px, EYE_H, pz);
+                heading = 54.0;
+                give_hotdog = true;
+            }
+            _ => {}
+        }
+    }
     match players.single_mut() {
         Ok(mut ptf) => *ptf = start,
         Err(_) => {
@@ -443,7 +475,11 @@ fn build_pending(
     r.fade = 1.0; // fade in from black
     // spawn at angle 0 facing the forward tangent (tangent at 0 = +X = heading 90)
     r.theta_prev = 0.0;
-    r.heading = 90.0;
+    r.heading = heading;
+    r.has_penny = give_penny;
+    r.penny_spawned = give_penny;
+    r.hotdog_spawned = give_hotdog;
+    r.has_hotdog = give_hotdog;
     commands.insert_resource(r);
     *LAP.lock().unwrap() = 0.0;
     world::build_world(
@@ -700,10 +736,13 @@ fn interactions(
     let Ok(ptf) = players.single() else { return };
     let ppos = ptf.translation;
     run.prompt = None;
-    let press_e = keys.just_pressed(KeyCode::KeyE);
+    if run.won.is_some() {
+        return; // the dream is over; no prompts or interactions on the way out
+    }
 
+    let press_e = keys.just_pressed(KeyCode::KeyE);
     // penny pickup / throw
-    if !run.has_penny {
+    if !run.has_penny && run.penny_spawned {
         for (e, t) in &penny {
             let d = t.translation().distance(ppos);
             if d < 2.2 {
@@ -722,7 +761,7 @@ fn interactions(
                 }
             }
         }
-    } else {
+    } else if run.has_penny {
         for f in &fountains {
             let d = Vec2::new(f.center.x - ppos.x, f.center.z - ppos.z).length();
             if d < 4.0 && ppos.y < 2.5 {
@@ -773,7 +812,7 @@ fn interactions(
                     // enter flight
                     run.mode = Mode::Flying;
                     run.roll = 0.0;
-                    toast(&mut run, "YOU ARE LIGHT.");
+                    toast(&mut run, "YOU ARE LIGHT. SPACE RISES. SHIFT FALLS.");
                     commands.spawn((
                         AudioPlayer(sfx.riser.clone()),
                         PlaybackSettings {
@@ -880,6 +919,7 @@ fn mutation(
     mut wm: ResMut<WorldMats>,
     mut mats_q: Query<(&Sec, &Role, Option<&Slot>, &mut Transform, Option<&mut MeshMaterial3d<StandardMaterial>>, Option<&mut Visibility>, Option<&mut PointLight>), With<Role>>,
     mut hotdogs: Query<&mut Visibility, (With<Hotdog>, Without<Role>)>,
+    mut pennies: Query<&mut Visibility, (With<Penny>, Without<Role>)>,
     mats: Res<Mats>,
     sfx: Res<Sfx>,
     mut commands: Commands,
@@ -929,6 +969,7 @@ fn mutation(
                     *mm = MeshMaterial3d(mats.ads[ns].clone());
                 }
             }
+            Role::Glass => {}
             Role::Light => {
                 if let Some(mut pl) = light {
                     let hue = (h(13) % 1000) as f32 / 1000.0;
@@ -959,6 +1000,15 @@ fn mutation(
             *v = Visibility::Visible;
         }
         toast(&mut run, "SOMETHING NEW IS ON A TABLE SOMEWHERE.");
+    }
+    // penny reveal: seeded pass 1 or 2 (spread the two dreams apart)
+    let reveal_pass = 1 + (hash2(seed, 101) % 2) as u32;
+    if pass >= reveal_pass && !run.penny_spawned {
+        run.penny_spawned = true;
+        for mut v in &mut pennies {
+            *v = Visibility::Visible;
+        }
+        toast(&mut run, "SOMETHING GLINTS ON A TABLE SOMEWHERE.");
     }
     world::rebuild_obstacles(&mut commands);
 }
@@ -1205,16 +1255,41 @@ fn ui_update(
     }
     let prompt = run.prompt.clone().unwrap_or_default();
     let toast = run.toast.as_ref().map(|(m, _)| m.clone()).unwrap_or_default();
+    let hint: String = if run.mode == Mode::Flying {
+        "WASD move   SPACE rise  SHIFT sink   mouse look   Q/E roll".into()
+    } else {
+        "W forward   A/D strafe   turn: mouse (click to grab) or Left/Right arrows   E interact".into()
+    };
     for (name, kids) in texts.iter_mut() {
         let want = match name.as_str() {
             "prompt" => &prompt,
             "toast" => &toast,
+            "hint" => &hint,
             _ => continue,
         };
         for k in kids.iter() {
             if let Ok(mut t) = textq.get_mut(k) {
                 if t.0 != *want {
                     t.0 = want.clone();
+                }
+            }
+        }
+    }
+}
+
+/// clear stale toast/prompt text so nothing from the dream leaks onto the ending screen
+fn clear_hud_on_end(
+    mut run: ResMut<Run>,
+    mut texts: Query<(&Name, &Children)>,
+    mut textq: Query<&mut Text>,
+) {
+    run.toast = None;
+    run.prompt = None;
+    for (name, kids) in texts.iter_mut() {
+        if name.as_str() == "prompt" || name.as_str() == "toast" || name.as_str() == "hint" {
+            for k in kids.iter() {
+                if let Ok(mut t) = textq.get_mut(k) {
+                    t.0.clear();
                 }
             }
         }
@@ -1266,7 +1341,6 @@ pub fn build(app: &mut App) {
                 .after(build_pending)
                 .before(bevy::transform::TransformSystems::Propagate),
             camera_rig.after(player_input),
-            cursor_ctrl,
             interactions.after(player_input),
             mutation.after(interactions),
             rebuild_obstacles_sys.run_if(resource_changed::<ObstacleBuildTick>),
@@ -1280,7 +1354,10 @@ pub fn build(app: &mut App) {
         )
             .run_if(in_state(GS::Dreaming)),
     );
-    app.add_systems(OnEnter(GS::Ended), (capture_win2, spawn_ending_ui));
+    // cursor grab/release must also run during the ending screen so the win
+    // fade releasing the grab leaves the mouse free for the UI buttons
+    app.add_systems(Update, cursor_ctrl.run_if(resource_exists::<Run>));
+    app.add_systems(OnEnter(GS::Ended), (capture_win2, spawn_ending_ui, clear_hud_on_end));
     // ending screen: Escape quits
     app.add_systems(Update, exit_on_escape.run_if(in_state(GS::Ended)));
 }
