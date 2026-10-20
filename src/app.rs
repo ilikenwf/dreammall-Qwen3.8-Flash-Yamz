@@ -258,7 +258,10 @@ fn build_mats(
     }
 }
 
-fn build_audio(sources: &mut ResMut<Assets<AudioSource>>) -> (Sfx, Music, Handle<AudioSource>, Handle<AudioSource>) {
+fn build_audio(
+    sources: &mut ResMut<Assets<AudioSource>>,
+    seed: u64,
+) -> (Sfx, Music, Handle<AudioSource>, Handle<AudioSource>) {
     let mut add = |bytes: Vec<u8>| sources.add(AudioSource { bytes: bytes.into() });
     let sfx = Sfx {
         pickup: add(synth::sfx_pickup()),
@@ -270,7 +273,7 @@ fn build_audio(sources: &mut ResMut<Assets<AudioSource>>) -> (Sfx, Music, Handle
     };
     let foot_l = add(synth::sfx_footstep(true));
     let foot_r = add(synth::sfx_footstep(false));
-    let set = synth::muzak_set();
+    let set = synth::muzak_set_for(seed);
     let durs = set
         .iter()
         .map(|b| (b.len() - 44) as f32 / (44100.0 * 2.0 * 2.0))
@@ -398,14 +401,29 @@ fn setup_dream(
     mut sources: ResMut<Assets<AudioSource>>,
     mut meshes: ResMut<Assets<Mesh>>,
     sky: Option<Res<VoidSky>>,
+    old_music: Option<Res<Music>>,
 ) {
     let seed = 0xC0FFEE ^ (std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map(|d| d.as_nanos() as u64)
         .unwrap_or(0x51A7)
         & 0xFFFF_FFFF_0000);
+    // New dream: silence the previous dream's score, free its assets, then
+    // render a fresh per-seed muzak set (same style rules, new performance).
+    if let Some(old) = old_music {
+        for e in old
+            .cur_ent
+            .iter()
+            .chain(old.fading.iter().map(|(e, _)| e))
+        {
+            commands.entity(*e).despawn();
+        }
+        for h in &old.loops {
+            sources.remove(h);
+        }
+    }
     let mats = build_mats(&mut images, &mut smats, seed);
-    let (sfx, music, foot_l, foot_r) = build_audio(&mut sources);
+    let (sfx, music, foot_l, foot_r) = build_audio(&mut sources, seed);
     commands.insert_resource(mats);
     commands.insert_resource(sfx);
     commands.insert_resource(music);

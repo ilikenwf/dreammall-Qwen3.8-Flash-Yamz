@@ -79,8 +79,13 @@ fn main() {
     all &= ok("font rejects unknown glyph", !text_to_pixels("bad \x07", 2, [0, 0, 0], [0, 0, 0, 255], 256, 64, &mut fb));
 
     // ---- audio ----
-    let set = synth::muzak_set();
-    all &= ok("muzak_set has variants", set.len() >= 3);
+    let set = synth::muzak_set_for(0xC0FFEE);
+    all &= ok("muzak set has variants", set.len() == 6);
+    let set2 = synth::muzak_set_for(0xBEEF);
+    all &= ok(
+        "muzak differs per seed",
+        set.iter().zip(&set2).all(|(a, b)| a != b),
+    );
     for (i, wav) in set.iter().enumerate() {
         all &= ok(&format!("muzak {i} valid wav"), wav.len() > 1000 && &wav[0..4] == b"RIFF" && &wav[8..12] == b"WAVE");
         // scan PCM16 body for sanity: any real signal, nothing pinned at full scale

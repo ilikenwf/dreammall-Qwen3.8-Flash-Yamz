@@ -53,7 +53,8 @@ Which exit you find depends on what the mall reveals. Watch for toasts.
 - **The void.** Past the atrium glass the mall floats over a slowly
   churning psychedelic singularity.
 - **Music.** Procedural MIDI-event muzak: bass, chords, melody, and drums
-  scheduled from scales and voice-leading, shifting with the dream's mood.
+  scheduled from scales and voice-leading. Every dream renders its own set
+  of six loops from its seed — same style rules, new performance.
 - **Mutation.** Sections change color and reveal hidden items as passes
   advance. SOMETHING GLINTS ON A TABLE SOMEWHERE.
 
