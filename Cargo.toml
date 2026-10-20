@@ -34,6 +34,7 @@ bevy = { version = "0.20", default-features = false, features = [
 ] }
 bevy_render = { version = "0.20", default-features = false, features = ["gles"] }
 image = { version = "0.25", default-features = false, features = ["png"] }
+libc = "0.2"
 half = "2"
 
 [profile.dev]

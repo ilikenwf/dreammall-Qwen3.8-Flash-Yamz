@@ -429,29 +429,8 @@ fn build_pending(
     // Player is NOT a child of WorldRoot, so it survives world respawn.
     // boundary between sections: the ring midline is clear of center props (fountains sit at section centers)
     let (sx, sz) = arc_point(0.0, R_MID);
-    let mut start = Transform::from_xyz(sx, EYE_H, sz);
-    // TEMP verification hook (strip before ship): spawn beside a win prop and
-    // grant its pickup state so both endings are reachable headlessly.
-    let mut heading = 90.0f32;
-    let mut give_penny = false;
-    let mut give_hotdog = false;
-    if let Ok(g) = std::env::var("DREAMMALL_GIVE") {
-        match g.as_str() {
-            "penny" => {
-                let (px, pz) = arc_point(18.0, R_MID - 2.7);
-                start = Transform::from_xyz(px, EYE_H, pz);
-                heading = 198.0;
-                give_penny = true;
-            }
-            "hotdog" => {
-                let (px, pz) = arc_point(234.0, 44.4 - 1.05);
-                start = Transform::from_xyz(px, EYE_H, pz);
-                heading = 54.0;
-                give_hotdog = true;
-            }
-            _ => {}
-        }
-    }
+    let start = Transform::from_xyz(sx, EYE_H, sz);
+    let heading = 90.0f32; // tangent at angle 0 = +X
     match players.single_mut() {
         Ok(mut ptf) => *ptf = start,
         Err(_) => {
@@ -476,10 +455,6 @@ fn build_pending(
     // spawn at angle 0 facing the forward tangent (tangent at 0 = +X = heading 90)
     r.theta_prev = 0.0;
     r.heading = heading;
-    r.has_penny = give_penny;
-    r.penny_spawned = give_penny;
-    r.hotdog_spawned = give_hotdog;
-    r.has_hotdog = give_hotdog;
     commands.insert_resource(r);
     *LAP.lock().unwrap() = 0.0;
     world::build_world(
@@ -918,8 +893,9 @@ fn mutation(
     mut run: ResMut<Run>,
     mut wm: ResMut<WorldMats>,
     mut mats_q: Query<(&Sec, &Role, Option<&Slot>, &mut Transform, Option<&mut MeshMaterial3d<StandardMaterial>>, Option<&mut Visibility>, Option<&mut PointLight>), With<Role>>,
-    mut hotdogs: Query<&mut Visibility, (With<Hotdog>, Without<Role>)>,
-    mut pennies: Query<&mut Visibility, (With<Penny>, Without<Role>)>,
+    // one query: ECS cannot prove With<Hotdog> and With<Penny> disjoint,
+    // so two &mut Visibility queries would conflict at schedule init
+    mut reveal: Query<(&mut Visibility, Has<Penny>), (Or<(With<Penny>, With<Hotdog>)>, Without<Role>)>,
     mats: Res<Mats>,
     sfx: Res<Sfx>,
     mut commands: Commands,
@@ -993,22 +969,25 @@ fn mutation(
         // hotdog reveal handled below via vis
         let _ = &vis;
     }
-    // hotdog reveal on pass>=1
-    if pass >= 1 && !run.hotdog_spawned {
-        run.hotdog_spawned = true;
-        for mut v in &mut hotdogs {
-            *v = Visibility::Visible;
-        }
-        toast(&mut run, "SOMETHING NEW IS ON A TABLE SOMEWHERE.");
-    }
-    // penny reveal: seeded pass 1 or 2 (spread the two dreams apart)
+    // seeded reveals: hotdog on pass>=1, penny on pass 1 or 2 (spread the
+    // two dreams apart)
     let reveal_pass = 1 + (hash2(seed, 101) % 2) as u32;
-    if pass >= reveal_pass && !run.penny_spawned {
-        run.penny_spawned = true;
-        for mut v in &mut pennies {
-            *v = Visibility::Visible;
+    let want_hotdog = pass >= 1 && !run.hotdog_spawned;
+    let want_penny = pass >= reveal_pass && !run.penny_spawned;
+    if want_hotdog || want_penny {
+        for (mut v, is_penny) in reveal.iter_mut() {
+            if (is_penny && want_penny) || (!is_penny && want_hotdog) {
+                *v = Visibility::Visible;
+            }
         }
-        toast(&mut run, "SOMETHING GLINTS ON A TABLE SOMEWHERE.");
+        if want_hotdog {
+            run.hotdog_spawned = true;
+            toast(&mut run, "SOMETHING NEW IS ON A TABLE SOMEWHERE.");
+        }
+        if want_penny {
+            run.penny_spawned = true;
+            toast(&mut run, "SOMETHING GLINTS ON A TABLE SOMEWHERE.");
+        }
     }
     world::rebuild_obstacles(&mut commands);
 }
