@@ -239,7 +239,7 @@ fn spawn_section_shell(
             Sec(i),
             PointLight {
                 intensity: 9000.0,
-                range: 26.0,
+                range: 34.0,
                 color: Color::srgb(1.0, 0.86, 0.92),
                 ..default()
             },

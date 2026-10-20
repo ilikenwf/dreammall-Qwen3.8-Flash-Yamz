@@ -24,6 +24,7 @@ procedural — no asset downloads, no data files.
 | `D` / `→` | step right (along the ring) |
 | mouse | look around (click to grab pointer) |
 | `E` | interact |
+| `F11` | toggle fullscreen |
 | `Esc` | release pointer |
 
 You cannot walk backward. The mall will not let you, and neither will we.

@@ -538,7 +538,7 @@ fn spawn_ui_root(commands: &mut Commands, images: &mut ResMut<Assets<Image>>) {
                 GlobalZIndex(41),
             ))
             .with_child((
-                Text::new("W forward   A/D strafe   turn: mouse (click to grab) or Left/Right arrows   E interact"),
+                Text::new("W forward   A/D strafe   turn: mouse (click to grab) or Left/Right arrows   E interact   F11 fullscreen"),
                 TextFont {
                     font_size: FontSize::Px(15.0),
                     ..default()
@@ -593,7 +593,7 @@ fn build_pending(
                     // falloff still read as dim walls, not pitch-black void
                     AmbientLight {
                         color: Color::srgb(0.55, 0.45, 0.75),
-                        brightness: 55.0,
+                        brightness: 130.0,
                         affects_lightmapped_meshes: false,
                     },
                     bevy::camera::visibility::NoCpuCulling,
@@ -875,6 +875,34 @@ fn cursor_ctrl(
     if keys.just_pressed(KeyCode::Escape) && run.locked {
         co.grab_mode = CursorGrabMode::None;
         run.locked = false;
+    }
+}
+
+// F11 toggles exclusive fullscreen so the mall fills the display; the 1600x900
+// default window leaves a dark desktop margin that reads as a "black band"
+fn fullscreen_toggle(mut windows: Query<&mut Window, With<PrimaryWindow>>, keys: Res<ButtonInput<KeyCode>>) {
+    if !keys.just_pressed(KeyCode::F11) {
+        return;
+    }
+    let Ok(mut win) = windows.single_mut() else { return };
+    win.mode = match win.mode {
+        bevy::window::WindowMode::Fullscreen(..) => bevy::window::WindowMode::Windowed,
+        _ => bevy::window::WindowMode::Fullscreen(
+            bevy::window::MonitorSelection::Current,
+            bevy::window::VideoModeSelection::Current,
+        ),
+    };
+}
+
+// open maximized: a 1600x900 window floating on a dark desktop reads as a
+// black band around the game in screenshots; maximized fills the display
+fn start_maximized(mut windows: Query<&mut Window, With<PrimaryWindow>>, mut done: Local<bool>) {
+    if *done {
+        return;
+    }
+    if let Ok(mut win) = windows.single_mut() {
+        win.set_maximized(true);
+        *done = true;
     }
 }
 
@@ -1421,7 +1449,7 @@ fn ui_update(
     let hint: String = if run.mode == Mode::Flying {
         "WASD move   SPACE rise  SHIFT sink   mouse look   Q/E roll".into()
     } else {
-        "W forward   A/D strafe   turn: mouse (click to grab) or Left/Right arrows   E interact".into()
+        "W forward   A/D strafe   turn: mouse (click to grab) or Left/Right arrows   E interact   F11 fullscreen".into()
     };
     for (name, kids) in texts.iter_mut() {
         let want = match name.as_str() {
@@ -1522,6 +1550,8 @@ pub fn build(app: &mut App) {
     // cursor grab/release must also run during the ending screen so the win
     // fade releasing the grab leaves the mouse free for the UI buttons
     app.add_systems(Update, cursor_ctrl.run_if(resource_exists::<Run>));
+    app.add_systems(Update, fullscreen_toggle.run_if(resource_exists::<Run>));
+    app.add_systems(Update, start_maximized.run_if(resource_exists::<Run>));
     app.add_systems(OnEnter(GS::Ended), (capture_win2, spawn_ending_ui, clear_hud_on_end));
     // ending screen: Escape quits
     app.add_systems(Update, exit_on_escape.run_if(in_state(GS::Ended)));

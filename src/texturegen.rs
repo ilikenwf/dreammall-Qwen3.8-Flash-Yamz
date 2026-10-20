@@ -494,6 +494,9 @@ pub fn void_frame(seed: u64, t: f32) -> Rgba {
         // bright event-horizon ring, breathing twice per loop
         let ring = (-((d - 0.16) * 13.0).powi(2)).exp()
             * (0.6 + 0.4 * (ta * 2.0 + d * 9.0).sin());
+        // glowing horizon band: the atrium glass looks through the void at
+        // eye level (v~0.5); a near-black band there reads as a dark panel
+        let hor = (-((v - 0.5) * 5.0).powi(2)).exp() * (0.85 + 0.15 * ta.sin());
         // spiral value ramp + additive weight; whole spiral rotates once per loop
         let val = (glow * 1.35 + ring * 0.6).clamp(0.0, 1.0);
         let add = (glow * 1.6 + ring * 0.55).min(1.0);
@@ -514,6 +517,11 @@ pub fn void_frame(seed: u64, t: f32) -> Rgba {
             r += vr as f32 * add;
             g += vg as f32 * add;
             bl += vb as f32 * add;
+            // strong purple-blue horizon glow so the eye-level band reads as
+            // deep glowing space, not a black panel, through the atrium glass
+            r += hor * (120.0 + 80.0 * (u * 12.566).sin().abs());
+            g += hor * 42.0;
+            bl += hor * (150.0 + 60.0 * (u * 12.566).cos().abs());
             // twinkling starfield in the upper void, fading below the horizon
             let up = (1.0 - v * 2.2).max(0.0);
             if up > 0.05 {
