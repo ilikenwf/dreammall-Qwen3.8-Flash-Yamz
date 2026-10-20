@@ -23,6 +23,10 @@
 ## Tooling used
 - System tools only (Xvfb, xdotool, imagemagick, cargo). Nothing installed.
 
+- Headless driver supports `DREAMMALL_FLIGHT=1` (second process run): scripted
+  hotdog take -> eat -> flight -> rise-past-roof win -> Flight ending. Water
+  run remains the default (penny -> fountain dive -> Water ending).
+
 ## Debug env hooks (stripped before shipping)
 - `DREAMMALL_SPAWN=x,z`, `DREAMMALL_PASS=1`, `DREAMMALL_SHOT=path:secs`
   existed for headless testing; removed from shipping code.

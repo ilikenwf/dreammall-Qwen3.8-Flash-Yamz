@@ -56,6 +56,11 @@ fn pass(name: &str) {
     let _ = std::io::Write::flush(&mut std::io::stdout());
 }
 
+fn any_text_contains(world: &mut World, needle: &str) -> bool {
+    let mut q = world.query::<&Text>();
+    q.iter(world).any(|t| t.0.contains(needle))
+}
+
 fn ui_text(world: &mut World, node: &str) -> Option<String> {
     let mut q = world.query::<(&Name, &Children)>();
     for (name, kids) in q.iter(world) {
@@ -119,7 +124,21 @@ fn driver(world: &mut World) {
     }
 
     let phase = S.with(|s| s.borrow().phase);
+    if phase >= 20 {
+        flight(world, n, phase);
+        return;
+    }
     match phase {
+        // ---------- FLIGHT MODE: separate scripted run ----------
+        0 if std::env::var("DREAMMALL_FLIGHT").is_ok() => {
+            // drive the seeded mutation directly so the hotdog reveals
+            {
+                let mut run = world.resource_mut::<Run>();
+                run.pass = 1;
+                run.mutate_flag = true;
+            }
+            S.with(|s| s.borrow_mut().phase = 20);
+        }
         // ---------- RUN 1: clean start ----------
         0 => {
             {
@@ -367,6 +386,127 @@ fn driver(world: &mut World) {
             pass("hud cleared on ending");
 
             pass("RUN2 OK");
+            println!("ALL CHECKS PASSED");
+            let _ = std::io::Write::flush(&mut std::io::stdout());
+            hard_exit(0);
+        }
+        _ => {}
+    }
+}
+
+/// scripted flight-win run (DREAMMALL_FLIGHT=1): hotdog pickup -> eat ->
+/// flight -> fountain dive -> Flight win -> ending screen
+fn flight(world: &mut World, n: u32, phase: u32) {
+    match phase {
+        20 => {
+            if !world.resource::<Run>().hotdog_spawned {
+                if n > 150 {
+                    fail("hotdog never revealed");
+                }
+                return;
+            }
+            pass("hotdog revealed (flight run)");
+            let mut q = world.query_filtered::<&GlobalTransform, With<Hotdog>>();
+            let hd = match q.iter(world).next() {
+                Some(t) => t.translation(),
+                None => fail("no hotdog entity"),
+            };
+            teleport(world, Vec3::new(hd.x + 1.0, EYE_H, hd.z));
+            S.with(|s| s.borrow_mut().phase = 21);
+        }
+        21 => {
+            match &world.resource::<Run>().prompt {
+                Some(p) if p.contains("TAKE THE HOTDOG") => pass("hotdog take prompt"),
+                None => {
+                    if n > 250 {
+                        fail("hotdog prompt never appeared");
+                    }
+                    return;
+                }
+                Some(p) => fail(&format!("unexpected prompt near hotdog: {p}")),
+            }
+            world.resource_mut::<ButtonInput<KeyCode>>().press(KeyCode::KeyE);
+            S.with(|s| s.borrow_mut().phase = 22);
+        }
+        22 => {
+            {
+                let run = world.resource::<Run>();
+                if !run.has_hotdog {
+                    if n > 300 {
+                        fail("hotdog pickup never happened");
+                    }
+                    return;
+                }
+                if !run.prompt.as_deref().unwrap_or("").contains("EAT THE HOTDOG") {
+                    if n > 300 {
+                        fail("eat prompt never appeared");
+                    }
+                    return;
+                }
+            }
+            pass("hotdog picked up");
+            world.resource_mut::<ButtonInput<KeyCode>>().release(KeyCode::KeyE);
+            S.with(|s| s.borrow_mut().phase = 23);
+        }
+        23 => {
+            world.resource_mut::<ButtonInput<KeyCode>>().press(KeyCode::KeyE);
+            S.with(|s| s.borrow_mut().phase = 24);
+        }
+        24 => {
+            {
+                let run = world.resource::<Run>();
+                if run.mode != Mode::Flying {
+                    if n > 300 {
+                        fail("eating hotdog never entered flight");
+                    }
+                    return;
+                }
+            }
+            pass("hotdog eat enters flight");
+            world.resource_mut::<ButtonInput<KeyCode>>().release(KeyCode::KeyE);
+            // rise win: past the glass roof (y > 55). Fountain dives are the
+            // Water kind by design (water ending); covered by the water run.
+            teleport(world, Vec3::new(0.0, 55.5, 0.0));
+            S.with(|s| s.borrow_mut().phase = 25);
+        }
+        25 => {
+            match world.resource::<Run>().won {
+                Some(WinKind::Flight) => pass("rise past glass roof wins (Flight)"),
+                Some(w) => fail(&format!("wrong win kind: {w:?}")),
+                None => {
+                    if n > 600 {
+                        fail("flight win never triggered");
+                    }
+                    return;
+                }
+            }
+            S.with(|s| s.borrow_mut().phase = 26);
+        }
+        26 => {
+            if *world.resource::<State<GS>>().get() != GS::Ended {
+                if n > 1800 {
+                    fail("ending state never entered (flight)");
+                }
+                return;
+            }
+            S.with(|s| s.borrow_mut().settle = n + 4);
+            S.with(|s| s.borrow_mut().phase = 27);
+        }
+        27 => {
+            if n < S.with(|s| s.borrow().settle) {
+                return;
+            }
+            if !any_text_contains(world, "RISE THROUGH THE GLASS ROOF") {
+                fail("flight ending message missing");
+            }
+            pass("flight ending message");
+            {
+                let mut q = world.query_filtered::<Entity, With<SleepBtn>>();
+                if q.iter(world).next().is_none() {
+                    fail("no SLEEP button (flight ending)");
+                }
+            }
+            pass("FLIGHT RUN OK");
             println!("ALL CHECKS PASSED");
             let _ = std::io::Write::flush(&mut std::io::stdout());
             hard_exit(0);
