@@ -30,3 +30,12 @@
 ## Debug env hooks (stripped before shipping)
 - `DREAMMALL_SPAWN=x,z`, `DREAMMALL_PASS=1`, `DREAMMALL_SHOT=path:secs`
   existed for headless testing; removed from shipping code.
+
+## Dark-band complaint (4K laptop)
+- Two causes. (1) Capture artifact in our own Xvfb runs: the game window is
+  1600x900 top-left; everything beyond it in a full-root screenshot is the
+  black desktop, not the game. (2) Real scene issue: far sections at ambient
+  55 sat at luminance ~15 and the atrium glass looked through a near-black
+  void horizon band. Fixed: ambient 130, light range 34, glowing void
+  horizon, window opens maximized + F11 fullscreen toggle (needs a WM;
+  no-op under bare Xvfb, applies on KDE).
