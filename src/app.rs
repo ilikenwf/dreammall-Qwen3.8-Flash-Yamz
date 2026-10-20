@@ -96,9 +96,10 @@ fn build_mats(
     let glass = plain(
         smats,
         StandardMaterial {
-            base_color: Color::srgba(0.75, 0.85, 0.95, 0.28),
+            base_color: Color::srgba(0.75, 0.85, 0.95, 0.12),
             perceptual_roughness: 0.08,
             alpha_mode: AlphaMode::Blend,
+            emissive: LinearRgba::new(0.03, 0.045, 0.07, 1.0),
             ..default()
         },
     );
@@ -501,13 +502,14 @@ fn player_input(
     // arrow-key turn fallback so control never depends on pointer grab
     if run.mode == Mode::Walking {
         if keys.pressed(KeyCode::ArrowLeft) {
-            run.heading -= 100.0 * dt;
-        }
-        if keys.pressed(KeyCode::ArrowRight) {
             run.heading += 100.0 * dt;
         }
+        if keys.pressed(KeyCode::ArrowRight) {
+            run.heading -= 100.0 * dt;
+        }
     }
-    run.heading += dx * 0.12;
+    // right-hand turn = decreasing heading (fwd = (sin h, 0, cos h))
+    run.heading -= dx * 0.12;
     run.pitch = (run.pitch - dy * 0.12).clamp(-85.0, 85.0);
 
     let Ok(mut tf) = q.single_mut() else { return };
@@ -533,7 +535,7 @@ fn player_input(
         }
         let h = run.heading.to_radians();
         let f = Vec3::new(h.sin(), 0.0, h.cos());
-        let rt = Vec3::new(h.cos(), 0.0, -h.sin());
+        let rt = Vec3::new(-h.cos(), 0.0, h.sin());
         let speed = 3.4;
         let mut vel = (f * fwd + rt * strafe).normalize_or_zero() * speed;
         // gentle pressure to keep walking
@@ -607,7 +609,7 @@ fn player_input(
             p.sin(),
             h.cos() * p.cos(),
         );
-        let rt = Vec3::new(h.cos(), 0.0, -h.sin());
+        let rt = Vec3::new(-h.cos(), 0.0, h.sin());
         let mut vel = Vec3::ZERO;
         if keys.pressed(KeyCode::KeyW) {
             vel += fwd;

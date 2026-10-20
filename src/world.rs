@@ -682,6 +682,20 @@ fn spawn_atrium(
     seed: u64,
     i: usize,
 ) {
+    // vertical mullions along the glass so it reads as a window wall,
+    // not one giant dark panel
+    let h = ceil_h(i, seed);
+    for d in (-18..=18).step_by(4) {
+        let m = commands
+            .spawn((
+                Sec(i),
+                Mesh3d(meshes.add(cyl(0.06, h))),
+                MeshMaterial3d(mats.metal.clone()),
+                Transform::from_translation(local_arc(d as f32, R_IN, h / 2.0)),
+            ))
+            .id();
+        commands.entity(sec).add_child(m);
+    }
     // floating shapes beyond the glass inner wall
     for s in 0..6u64 {
         let h = hash2(seed, i as u64 * 100 + s);

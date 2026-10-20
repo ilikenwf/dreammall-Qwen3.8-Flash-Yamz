@@ -95,6 +95,16 @@ fn main() {
         let rms = (rms_sum / n as f64).sqrt() / 32768.0;
         all &= ok(&format!("muzak {i} audible, not clipping"), peak < 32767 && rms > 0.02);
     }
+    // event streams behind each loop variant must be non-empty and musical
+    for i in 0..set.len() {
+        let song = synth::song_for_variant(i);
+        all &= ok(
+            &format!("muzak {i} event stream non-empty"),
+            !song.is_empty()
+                && song.events.iter().any(|e| e.prog == synth::Prog::Rhodes)
+                && song.events.iter().any(|e| e.prog == synth::Prog::Bass),
+        );
+    }
     let lp = synth::muzak_loop(&MuzakParams { seed: 1, key_shift: 0.0, speed: 1.0, detune: 0.0, bright: 0.5, slow: true });
     all &= ok("slow variant renders", lp.len() > 1000);
     for (name, wav) in [
