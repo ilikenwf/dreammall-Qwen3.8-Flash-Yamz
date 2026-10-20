@@ -83,7 +83,7 @@ fn build_mats(
 ) -> Mats {
     let floor = textured(images, smats, (256, 256, texturegen::floor_tile(seed)), Color::WHITE, 0.0);
     let ceil = textured(images, smats, (256, 256, texturegen::ceil_tile(seed)), Color::WHITE, 0.0);
-    let water = textured(images, smats, (128, 128, texturegen::water(seed)), Color::WHITE, 0.12);
+    let water = textured(images, smats, (128, 128, texturegen::water(seed)), Color::WHITE, 0.55);
     let metal = plain(
         smats,
         StandardMaterial {
@@ -122,6 +122,15 @@ fn build_mats(
         StandardMaterial {
             base_color: Color::srgb(0.93, 0.91, 0.9),
             perceptual_roughness: 0.25,
+            ..default()
+        },
+    );
+    let marble_f = plain(
+        smats,
+        StandardMaterial {
+            base_color: Color::srgb(0.93, 0.91, 0.9),
+            perceptual_roughness: 0.25,
+            emissive: LinearRgba::new(0.06, 0.06, 0.065, 1.0),
             ..default()
         },
     );
@@ -230,6 +239,7 @@ fn build_mats(
         mirror,
         nyan,
         marble,
+        marble_f,
         gold,
         strip,
         glow,
@@ -279,11 +289,112 @@ fn build_audio(sources: &mut ResMut<Assets<AudioSource>>) -> (Sfx, Music, Handle
 #[derive(Resource)]
 struct NewDream(Option<u64>);
 
+/// Animated singularity backdrop: an inverted UV sphere wrapped in a baked
+/// equirectangular void panorama, centered on the mall. The vortex sits at
+/// the nadir (straight below), starfield at the zenith; slow Y-rotation plus
+/// 8-frame pulsing/twinkling texture loop drive the swirl.
+#[derive(Resource)]
+struct VoidSky {
+    frames: Vec<Handle<Image>>,
+    mat: Handle<StandardMaterial>,
+    idx: usize,
+}
+
+#[derive(Component)]
+struct VoidSphere;
+
+/// Bake + spawn (first dream) or re-bake (later dreams, new seed) the void.
+fn setup_void(
+    commands: &mut Commands,
+    meshes: &mut ResMut<Assets<Mesh>>,
+    images: &mut ResMut<Assets<Image>>,
+    smats: &mut ResMut<Assets<StandardMaterial>>,
+    seed: u64,
+    sky: Option<&VoidSky>,
+) {
+    const VOID_FRAMES: usize = 8;
+    let frames: Vec<Handle<Image>> = (0..VOID_FRAMES)
+        .map(|i| {
+            let img = world::tex_rgba(images, 512, 256, texturegen::void_frame(seed, i as f32 / VOID_FRAMES as f32), true);
+            img
+        })
+        .collect();
+    match sky {
+        Some(sky) => {
+            // keep the same material handle (the sphere keeps referencing
+            // it); just repoint its texture at the fresh bake
+            if let Some(mut m) = smats.get_mut(&sky.mat) {
+                m.emissive_texture = Some(frames[0].clone());
+            }
+            commands.insert_resource(VoidSky {
+                frames,
+                mat: sky.mat.clone(),
+                idx: 0,
+            });
+        }
+        None => {
+            let mat = smats.add(StandardMaterial {
+                // unlit emissive backdrop: black albedo so lights never
+                // touch it, fog off so the vortex glow survives DistanceFog
+                base_color: Color::BLACK,
+                emissive: LinearRgba::new(2.3, 2.3, 2.3, 1.0),
+                emissive_texture: Some(frames[0].clone()),
+                fog_enabled: false,
+                cull_mode: Some(bevy::render::render_resource::Face::Front),
+                ..default()
+            });
+            // UV sphere so the panorama maps; poles on local Z, rotated so
+            // the zenith row lands up and the vortex (last row) hangs below
+            let mesh = meshes.add(Sphere::new(400.0).mesh().uv(64, 32));
+            commands.spawn((
+                VoidSphere,
+                Name::new("void-sphere"),
+                Mesh3d(mesh),
+                MeshMaterial3d(mat.clone()),
+                Transform::from_rotation(Quat::from_rotation_x(-std::f32::consts::FRAC_PI_2)),
+            ));
+            commands.insert_resource(VoidSky {
+                frames,
+                mat,
+                idx: 0,
+            });
+        }
+    }
+}
+
+/// Cycle the pulsing frames and spin the vortex slowly about world Y.
+fn void_anim(
+    time: Res<Time>,
+    mut sky: ResMut<VoidSky>,
+    mut smats: ResMut<Assets<StandardMaterial>>,
+    mut q: Query<&mut Transform, With<VoidSphere>>,
+    cam: Query<&Transform, (With<Cam>, Without<VoidSphere>)>,
+) {
+    let t = time.elapsed_secs();
+    let idx = ((t / 0.5) as usize) % sky.frames.len();
+    if idx != sky.idx {
+        sky.idx = idx;
+        if let Some(mut m) = smats.get_mut(&sky.mat) {
+            m.emissive_texture = Some(sky.frames[idx].clone());
+        }
+    }
+    // one rotation per 50 s; pole axis is local Z after the -90° X tilt, so
+    // post-multiplying Rz spins the panorama around world Y
+    let spin = t * (std::f32::consts::TAU / 50.0);
+    let cxz = cam.single().map(|c| c.translation).unwrap_or(Vec3::ZERO);
+    for mut tf in q.iter_mut() {
+        tf.translation = Vec3::new(cxz.x, 0.0, cxz.z);
+        tf.rotation = Quat::from_rotation_x(-std::f32::consts::FRAC_PI_2) * Quat::from_rotation_z(spin);
+    }
+}
+
 fn setup_dream(
     mut commands: Commands,
     mut images: ResMut<Assets<Image>>,
     mut smats: ResMut<Assets<StandardMaterial>>,
     mut sources: ResMut<Assets<AudioSource>>,
+    mut meshes: ResMut<Assets<Mesh>>,
+    sky: Option<Res<VoidSky>>,
 ) {
     let seed = 0xC0FFEE ^ (std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
@@ -299,6 +410,14 @@ fn setup_dream(
     commands.insert_resource(NewDream(Some(seed)));
     commands.insert_resource(Run::new(seed, foot_l, foot_r));
     commands.insert_resource(ClearColor(Color::srgb(0.03, 0.01, 0.06)));
+    setup_void(
+        &mut commands,
+        &mut meshes,
+        &mut images,
+        &mut smats,
+        seed,
+        sky.as_deref(),
+    );
     spawn_ui_root(&mut commands, &mut images);
 }
 
@@ -438,6 +557,12 @@ fn build_pending(
             commands.spawn((
                 Player,
                 Name::new("player"),
+                // camera child gets Visibility from the render plugin; give
+                // the parent the full inheritance triple so the camera's
+                // visibility chain is well-formed (silences B0004)
+                Visibility::Visible,
+                InheritedVisibility::VISIBLE,
+                ViewVisibility::default(),
                 start,
                 children![(
                     Cam,
@@ -626,8 +751,8 @@ fn player_input(
         }
         // fog normal
         if let Ok(mut f) = fog.single_mut() {
-            f.color = Color::srgb(0.16, 0.08, 0.2);
-            f.falloff = FogFalloff::Exponential { density: 0.018 };
+            f.color = Color::srgb(0.10, 0.04, 0.16);
+            f.falloff = FogFalloff::Exponential { density: 0.014 };
         }
     } else {
         // ---- flight: free 6DOF, no collision ----
@@ -668,8 +793,8 @@ fn player_input(
             run.roll -= 60.0 * dt;
         }
         if let Ok(mut f) = fog.single_mut() {
-            f.color = Color::srgb(0.85, 0.15, 0.75);
-            f.falloff = FogFalloff::Exponential { density: 0.012 };
+            f.color = Color::srgb(0.6, 0.08, 0.52);
+            f.falloff = FogFalloff::Exponential { density: 0.006 };
         }
     }
 
@@ -1140,9 +1265,9 @@ fn spawn_ending_ui(
     winent: Res<WinShown>,
 ) {
     let msg = match winent.0 {
-        Some(WinKind::Water) => "THE WATER TAKES YOU DOWN, WARM AND SWEET.\nYOU WAKE UP, CONGRATULATIONS.",
-        Some(WinKind::Flight) => "YOU RISE THROUGH THE GLASS ROOF.\nTHE PARKING LOT IS AN OCEAN OF MIST.\nYOU WAKE UP, CONGRATULATIONS.",
-        None => "YOU WAKE UP, CONGRATULATIONS.",
+        Some(WinKind::Water) => "THE WATER TAKES YOU DOWN, WARM AND SWEET.\nYOU WOKE UP, CONGRATULATIONS.",
+        Some(WinKind::Flight) => "YOU RISE THROUGH THE GLASS ROOF.\nTHE PARKING LOT IS AN OCEAN OF MIST.\nYOU WOKE UP, CONGRATULATIONS.",
+        None => "YOU WOKE UP, CONGRATULATIONS.",
     };
     commands
         .spawn((
@@ -1188,7 +1313,7 @@ fn spawn_ending_ui(
             ))
             .observe(sleep_btn)
             .with_child((
-                Text::new("GO BACK TO SLEEP"),
+                Text::new("GO BACK TO SLEEP?"),
                 TextFont {
                     font_size: FontSize::Px(24.0),
                     ..default()
@@ -1361,6 +1486,8 @@ pub fn build(app: &mut App) {
             fade_apply.after(win_fade),
             nyan_anim,
             float_drift,
+            fountain_anim,
+            void_anim,
         )
             .run_if(in_state(GS::Dreaming)),
     );
@@ -1399,5 +1526,24 @@ fn float_drift(time: Res<Time>, mut q: Query<(&FloatShape, &mut Transform)>) {
     let t = time.elapsed_secs();
     for (f, mut tf) in q.iter_mut() {
         tf.rotation = Quat::from_axis_angle(f.axis, t * f.speed);
+    }
+}
+
+/// fountain water shimmers/bobs; jets pulse their height
+fn fountain_anim(time: Res<Time>, mut q: Query<(Option<&WaterSurface>, Option<&WaterJet>, &mut Transform)>) {
+    let t = time.elapsed_secs();
+    for (ws, wj, mut tf) in q.iter_mut() {
+        if let Some(w) = ws {
+            // gentle bob + scale ripple on the basin surface
+            tf.translation.y = 0.72 + (t * 1.7 + w.phase).sin() * 0.015;
+            let s = 1.0 + (t * 2.1 + w.phase).sin() * 0.012;
+            tf.scale = Vec3::new(s, s, 1.0);
+        }
+        if let Some(j) = wj {
+            // jet columns pulse between 40% and 130% height, anchored at the basin
+            let p = 0.85 + (t * 3.1 + j.phase).sin() * 0.45;
+            tf.scale.y = p;
+            tf.translation.y = 0.75 + 0.4 * p;
+        }
     }
 }

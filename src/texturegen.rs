@@ -347,74 +347,66 @@ pub fn brick(seed: u64) -> Rgba {
     b
 }
 
-// ---- nyancat: 120x40 pixel sprite + rainbow trail (RGBA, transparent elsewhere) ----
+// ---- nyancat: 120x40 real Nyan Cat 8-bit pixel art (RGBA, transparent elsewhere) ----
+// Source: official nyan.cat thumbnail frame 1 (Chris Torres / sarajay), native indexed
+// sprite at 2x screen pixels; decoded to its 51x20 logical grid, palette below.
+// Rendered x2 nearest-neighbor at x=0..102, y=0..40; trail runs flush to the left edge.
+const NYAN_ROWS: [&str; 20] = [
+    "bbbbbbbb........bbbbbbbb...ccccccccccccccccc.......",
+    "bbbbbbbbbbbbbbbbbbbbbbbbbbcdddddddddddddddddc......",
+    "bbbbbbbbbbbbbbbbbbbbbbbbbcdddeeeeeeeeeeeeedddc.....",
+    "ffffffffbbbbbbbbffffffffbcddeeeeeegeegeeeeeddc.....",
+    "fffffffffffffffffffffffffcdeegeeeeeeeeeeeeeedc.....",
+    "fffffffffffffffffffffffffcdeeeeeeeeeecceegeedc.cc..",
+    "hhhhhhhhffffffffhhhhhhhhfcdeeeeeeeeeciiceeeedcciic.",
+    "hhhhhhhhhhhhhhhhhhhcccchhcdeeeeeegeeciiiceeedciiic.",
+    "hhhhhhhhhhhhhhhhhhhciicchcdeeeeeeeeeciiiicccciiiic.",
+    "jjjjjjjjhhhhhhhhjjjcciicccdeeegeeeeeciiiiiiiiiiiic.",
+    "jjjjjjjjjjjjjjjjjjjjcciiccdeeeeeeegciiiiiiiiiiiiiic",
+    "jjjjjjjjjjjjjjjjjjjjjcciicdegeeeeeeciiikciiiiikciic",
+    "lllllllljjjjjjjjllllllccccdeeeeeeeeciiicciiicicciic",
+    "llllllllllllllllllllllllccdeeeeegeecimmiiiiiiiiimmc",
+    "lllllllllllllllllllllllllcddegeeeeecimmiciiciicimmc",
+    "nnnnnnnnllllllllnnnnnnnnlcdddeeeeeeeciiiccccccciic.",
+    "nnnnnnnnnnnnnnnnnnnnnnnncccddddddddddciiiiiiiiiic..",
+    "nnnnnnnnnnnnnnnnnnnnnnnciiiccccccccccccccccccccc...",
+    "........nnnnnnnn.......ciiccnciic.....ciic.ciic....",
+    ".......................cccc..ccc.......ccc..cc.....",
+];
+// b..n = red, black outline, waffle crust, pink frosting, orange, sprinkle magenta,
+// yellow, gray, green, eye-cyan, blue, cheek pink, purple
+const NYAN_PAL: [[u8; 3]; 13] = [
+    [255, 0, 0],
+    [0, 0, 0],
+    [255, 204, 153],
+    [255, 153, 255],
+    [255, 153, 0],
+    [255, 51, 153],
+    [255, 255, 0],
+    [153, 153, 153],
+    [51, 255, 0],
+    [189, 255, 247],
+    [0, 153, 255],
+    [255, 153, 153],
+    [102, 51, 255],
+];
 pub fn nyancat() -> Rgba {
     let w = 120u32;
     let h = 40u32;
     let mut b = new_buf(w, h, [0, 0, 0, 0]);
-    // rainbow trail: 6 horizontal bands scrolling (static image; scroll via UV anim)
-    let bands = [
-        [255u8, 60, 60],
-        [255, 160, 60],
-        [255, 240, 90],
-        [110, 230, 110],
-        [90, 170, 255],
-        [190, 110, 255],
-    ];
-    for (bi, bc) in bands.iter().enumerate() {
-        let y0 = 8 + (bi as u32) * 4;
-        for y in y0..y0 + 4 {
-            for x in 0..64u32 {
-                put(&mut b, w, x, y, [bc[0], bc[1], bc[2], 255]);
+    for (gy, row) in NYAN_ROWS.iter().enumerate() {
+        for (gx, ch) in row.bytes().enumerate() {
+            if ch == b'.' {
+                continue;
             }
-        }
-    }
-    // cat body (pop-tart) at x 56..104, y 6..34
-    for y in 6..34u32 {
-        for x in 56..104u32 {
-            let edge = x < 60 || x > 99 || y < 10 || y > 29;
-            let c = if edge { [40u8, 28, 22] } else { [250, 176, 96] }; // frosting-ish tan
-            put(&mut b, w, x, y, [c[0], c[1], c[2], 255]);
-        }
-    }
-    // pink frosting inner
-    for y in 12..28u32 {
-        for x in 62..98u32 {
-            put(&mut b, w, x, y, [255, 160, 190, 255]);
-        }
-    }
-    // face: white muzzle
-    for y in 18..26u32 {
-        for x in 70..90u32 {
-            put(&mut b, w, x, y, [255, 250, 250, 255]);
-        }
-    }
-    // eyes
-    for y in 14..18u32 {
-        for x in [72u32, 84] {
-            for dx in 0..3u32 {
-                put(&mut b, w, x + dx, y, [20, 20, 30, 255]);
-            }
-        }
-    }
-    // mouth
-    for x in 76..82u32 {
-        put(&mut b, w, x, 22, [220, 60, 90, 255]);
-    }
-    // ears
-    for y in 2..6u32 {
-        for x in 58..66u32 {
-            put(&mut b, w, x, y, [40, 28, 22, 255]);
-        }
-        for x in 94..102u32 {
-            put(&mut b, w, x, y, [40, 28, 22, 255]);
-        }
-    }
-    // legs
-    for y in 34..38u32 {
-        for x in [62u32, 74, 86, 96] {
-            for dx in 0..5u32 {
-                put(&mut b, w, x + dx, y, [40, 28, 22, 255]);
+            let c = NYAN_PAL[(ch - b'b') as usize];
+            let x = (gx as u32) * 2;
+            let y = (gy as u32) * 2;
+            // x2 nearest-neighbor: replicate each logical pixel into a 2x2 block
+            for dy in 0..2u32 {
+                for dx in 0..2u32 {
+                    put(&mut b, w, x + dx, y + dy, [c[0], c[1], c[2], 255]);
+                }
             }
         }
     }
@@ -483,6 +475,77 @@ pub fn hsv(h: f32, s: f32, v: f32) -> [u8; 3] {
     [(r * 255.0) as u8, (g * 255.0) as u8, (b * 255.0) as u8]
 }
 
+/// Void backdrop frame: equirectangular panorama for the singularity sphere.
+/// Texture rows map sphere latitude top-down: row 0 = zenith (starfield),
+/// row h-1 = nadir (vortex center, straight below the mall). `t` is loop
+/// phase in [0,1); every temporal term completes an integer number of cycles
+/// per loop so cycling frames never pops.
+pub fn void_frame(seed: u64, t: f32) -> Rgba {
+    let w = 512u32;
+    let h = 256u32;
+    let mut b = new_buf(w, h, [0, 0, 0, 255]);
+    let ta = t * std::f32::consts::TAU;
+    for y in 0..h {
+        // v: 0 at zenith, 1 at nadir; d = angular distance from vortex center
+        let v = (y as f32 + 0.5) / h as f32;
+        let d = 1.0 - v;
+        // vortex glow: tight around the nadir, fading out by the horizon
+        let glow = (-d * 3.4).exp();
+        // bright event-horizon ring, breathing twice per loop
+        let ring = (-((d - 0.16) * 13.0).powi(2)).exp()
+            * (0.6 + 0.4 * (ta * 2.0 + d * 9.0).sin());
+        // spiral value ramp + additive weight; whole spiral rotates once per loop
+        let val = (glow * 1.25 + ring * 0.55).clamp(0.0, 1.0);
+        let add = (glow * 1.4 + ring * 0.5).min(1.0);
+        for x in 0..w {
+            let u = (x as f32 + 0.5) / w as f32;
+            // 3 rainbow arms around the pole, 4 hue bands pole-to-horizon; hue is
+            // frame-invariant so frame swaps never pop the bands (the swirl comes
+            // from the smooth sphere rotation; only pulse/twinkle animate below)
+            let hue = (3.0 * u + 4.0 * d).fract();
+            let [vr, vg, vb] = hsv(hue, 0.85, val);
+            // dark purple-black void, slightly brighter toward the vortex
+            let mut r = 6.0 + 20.0 * glow * glow;
+            let mut g = 3.0 + 4.0 * glow * glow;
+            let mut bl = 14.0 + 26.0 * glow * glow;
+            r += vr as f32 * add;
+            g += vg as f32 * add;
+            bl += vb as f32 * add;
+            // twinkling starfield in the upper void, fading below the horizon
+            let up = (1.0 - v * 2.2).max(0.0);
+            if up > 0.05 {
+                let cx = (u * 96.0) as u64;
+                let cy = (v * 48.0) as u64;
+                if fhash(seed + 3, cx.wrapping_mul(73856093) ^ cy.wrapping_mul(19349663)) > 0.982
+                {
+                    let ph = fhash(seed + 5, cx.wrapping_mul(91) ^ cy.wrapping_mul(31));
+                    let tw =
+                        (0.45 + 0.55 * (ta * 3.0 + ph * std::f32::consts::TAU).sin()).max(0.0);
+                    let s = 170.0 * tw * up;
+                    r += s * 0.85;
+                    g += s * 0.8;
+                    bl += s;
+                }
+            }
+            // faint grain to break banding
+            let n = (fhash(seed + 9, (y as u64) << 16 | x as u64) - 0.5) * 5.0;
+            put(
+                &mut b,
+                w,
+                x,
+                y,
+                [
+                    (r + n).clamp(0.0, 255.0) as u8,
+                    (g + n).clamp(0.0, 255.0) as u8,
+                    (bl + n).clamp(0.0, 255.0) as u8,
+                    255,
+                ],
+            );
+        }
+    }
+    b
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -516,4 +579,22 @@ mod tests {
         }
         assert!(hits > 200, "expected magenta text pixels, got {hits}");
     }
+    #[test]
+    fn void_frame_layout() {
+        let b = void_frame(1, 0.0);
+        assert_eq!(b.len(), 512 * 256 * 4);
+        let lum = |x: u32, y: u32| -> u32 {
+            let i = ((y * 512 + x) * 4) as usize;
+            b[i] as u32 + b[i + 1] as u32 + b[i + 2] as u32
+        };
+        // vortex (nadir, last row) must dominate the zenith (first row)
+        let mut bot = 0u32;
+        let mut top = 0u32;
+        for x in 0..512u32 {
+            bot += lum(x, 255);
+            top += lum(x, 0);
+        }
+        assert!(bot > top * 4, "vortex {bot} vs zenith {top}");
+    }
+
 }

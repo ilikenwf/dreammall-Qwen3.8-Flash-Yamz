@@ -596,33 +596,63 @@ fn spawn_fountain(
                 off: 0.0,
             },
             prop_tf(MID, 0.0, 0.0, 0.0),
-            Obs(2.0),
+            Obs(1.35),
         ))
         .id();
+    // self-lit pool: the mall's sparse lights never reach the basin, so the
+    // fountain carries its own glow
+    let glow = commands
+        .spawn((
+            Sec(i),
+            PointLight {
+                intensity: 20000.0,
+                range: 7.0,
+                color: Color::srgb(0.45, 0.95, 0.9),
+                ..default()
+            },
+            Transform::from_xyz(0.0, 1.6, 0.0),
+        ))
+        .id();
+    commands.entity(f).add_child(glow);
+    // marble outer shell
+    let shell = commands
+        .spawn((
+            Sec(i),
+            Mesh3d(meshes.add(cyl(1.3, 0.6))),
+            MeshMaterial3d(mats.marble_f.clone()),
+            Transform::from_xyz(0.0, 0.3, 0.0),
+        ))
+        .id();
+    // dark inner bowl so the basin reads as hollow
+    let inner = commands
+        .spawn((
+            Sec(i),
+            Mesh3d(meshes.add(cyl(1.05, 0.5))),
+            MeshMaterial3d(mats.water.clone()),
+            Transform::from_xyz(0.0, 0.42, 0.0),
+        ))
+        .id();
+    // thin marble rim ring around the top
     let rim = commands
         .spawn((
             Sec(i),
-            Mesh3d(meshes.add(Torus::new(1.6, 2.1))),
-            MeshMaterial3d(mats.marble.clone()),
+            Mesh3d(meshes.add(Torus::new(1.22, 0.18))),
+            MeshMaterial3d(mats.marble_f.clone()),
             // torus is generated flat in XZ (hole axis = Y); no rotation needed
-            Transform::from_xyz(0.0, 0.55, 0.0),
+            Transform::from_xyz(0.0, 0.62, 0.0),
         ))
         .id();
-    let basin = commands
-        .spawn((
-            Sec(i),
-            Mesh3d(meshes.add(cyl(1.85, 1.0))),
-            MeshMaterial3d(mats.marble.clone()),
-            Transform::from_xyz(0.0, 0.5, 0.0),
-        ))
-        .id();
+    // visible rippling water surface
     let water = commands
         .spawn((
             Sec(i),
-            Mesh3d(meshes.add(Circle::new(1.75))),
+            WaterSurface {
+                phase: (hash2(seed, 31 + i as u64) % 628) as f32 / 100.0,
+            },
+            Mesh3d(meshes.add(Circle::new(0.95))),
             MeshMaterial3d(mats.water.clone()),
             Transform {
-                translation: Vec3::new(0.0, 0.85, 0.0),
+                translation: Vec3::new(0.0, 0.72, 0.0),
                 rotation: Quat::from_rotation_x(-90.0f32.to_radians()),
                 ..default()
             },
@@ -632,7 +662,7 @@ fn spawn_fountain(
         .spawn((
             Sec(i),
             Mesh3d(meshes.add(cyl(0.22, 1.3))),
-            MeshMaterial3d(mats.marble.clone()),
+            MeshMaterial3d(mats.marble_f.clone()),
             Transform::from_xyz(0.0, 1.2, 0.0),
         ))
         .id();
@@ -644,7 +674,34 @@ fn spawn_fountain(
             Transform::from_xyz(0.0, 2.05, 0.0),
         ))
         .id();
-    commands.entity(f).add_children(&[rim, basin, water, pillar, gold]);
+    // four pulsing jets between pillar and rim
+    let mut jets = Vec::new();
+    for (slot, (jx, jz)) in [
+        (0.55f32, 0.55f32),
+        (-0.55, 0.55),
+        (0.55, -0.55),
+        (-0.55, -0.55),
+    ]
+    .iter()
+    .enumerate()
+    {
+        let j = commands
+            .spawn((
+                Sec(i),
+                WaterJet {
+                    phase: (hash2(seed, 71 + i as u64 * 7 + slot as u64) % 628) as f32 / 100.0,
+                },
+                Mesh3d(meshes.add(cyl(0.06, 0.8))),
+                MeshMaterial3d(mats.water.clone()),
+                Transform::from_xyz(*jx, 1.05, *jz),
+            ))
+            .id();
+        jets.push(j);
+    }
+    commands.entity(f).add_children(&[shell, inner, rim, water, pillar, gold]);
+    for j in jets {
+        commands.entity(f).add_child(j);
+    }
     commands.entity(sec).add_child(f);
 
     // decorative pedestal only; the real penny sits hidden on a section 2 table

@@ -101,6 +101,7 @@ pub struct Mats {
     pub mirror: Handle<StandardMaterial>,
     pub nyan: Handle<StandardMaterial>,
     pub marble: Handle<StandardMaterial>,
+    pub marble_f: Handle<StandardMaterial>, // slightly self-lit fountain marble
     pub gold: Handle<StandardMaterial>,
     pub strip: Handle<StandardMaterial>, // emissive light strip
     pub glow: Handle<StandardMaterial>,  // emissive float shapes
@@ -195,6 +196,17 @@ pub struct NyanQuad {
 pub struct FloatShape {
     pub speed: f32,
     pub axis: Vec3,
+}
+
+/// fountain basin water surface: ripples + bob
+#[derive(Component)]
+pub struct WaterSurface {
+    pub phase: f32,
+}
+/// fountain jet column: pulsing height
+#[derive(Component)]
+pub struct WaterJet {
+    pub phase: f32,
 }
 #[derive(Component)]
 pub struct Cam;
