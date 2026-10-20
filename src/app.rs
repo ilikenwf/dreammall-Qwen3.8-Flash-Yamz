@@ -511,6 +511,16 @@ fn player_input(
     // right-hand turn = decreasing heading (fwd = (sin h, 0, cos h))
     run.heading -= dx * 0.12;
     run.pitch = (run.pitch - dy * 0.12).clamp(-85.0, 85.0);
+    // track manual looking so the dream can guide the gaze when idle
+    if dx != 0.0
+        || dy != 0.0
+        || keys.pressed(KeyCode::ArrowLeft)
+        || keys.pressed(KeyCode::ArrowRight)
+    {
+        run.look_idle = 0.0;
+    } else {
+        run.look_idle += dt;
+    }
 
     let Ok(mut tf) = q.single_mut() else { return };
 
@@ -538,20 +548,31 @@ fn player_input(
         let rt = Vec3::new(-h.cos(), 0.0, h.sin());
         let speed = 3.4;
         let mut vel = (f * fwd + rt * strafe).normalize_or_zero() * speed;
+        // the mall guides you: pure forward walking follows the ring curve,
+        // so holding W forever tracks the corridor instead of the outer wall
+        if fwd > 0.0 && strafe == 0.0 {
+            let q = tf.translation;
+            let th = q.x.atan2(q.z);
+            let t = Vec3::new(th.cos(), 0.0, -th.sin());
+            vel = vel.lerp(t * speed, 1.0 - (-2.5 * dt).exp());
+        }
         // gentle pressure to keep walking
         if run.idle > 15.0 {
-            vel += f * 0.9;
+            let q = tf.translation;
+            let th = q.x.atan2(q.z);
+            vel += Vec3::new(th.cos(), 0.0, -th.sin()) * 0.9;
+        }
+        // the mall guides you: with no recent look input, the gaze eases to
+        // the corridor tangent so forward walking faces forward; any mouse or
+        // arrow input above overrides instantly (look_idle resets)
+        if (fwd > 0.0 || run.idle > 15.0) && strafe == 0.0 && run.look_idle > 1.5 {
+            let th = tf.translation.x.atan2(tf.translation.z); // radians
+            let want = th.cos().atan2(-th.sin()).to_degrees();
+            run.heading += angle_delta(run.heading, want) * (1.0 - (-1.8 * dt).exp());
         }
         let mut p = tf.translation;
         p.x += vel.x * dt;
         p.z += vel.z * dt;
-        // ring clamp
-        let r = (p.x * p.x + p.z * p.z).sqrt().max(1e-4);
-        if r < WALK_IN || r > WALK_OUT {
-            let rc = r.clamp(WALK_IN, WALK_OUT);
-            p.x *= rc / r;
-            p.z *= rc / r;
-        }
         // obstacle push-out
         for (c, rad) in obstacles.circles.iter() {
             let d = Vec2::new(p.x - c.x, p.z - c.y);
@@ -561,6 +582,14 @@ fn player_input(
                 p.x += d.x / dl * push;
                 p.z += d.y / dl * push;
             }
+        }
+        // ring clamp LAST: obstacle push-out may shove the player into a
+        // wall band; the walkable ring is a hard constraint
+        let r = (p.x * p.x + p.z * p.z).sqrt().max(1e-4);
+        if r < WALK_IN || r > WALK_OUT {
+            let rc = r.clamp(WALK_IN, WALK_OUT);
+            p.x *= rc / r;
+            p.z *= rc / r;
         }
         // footstep audio by distance
         let step = vel.length() * dt;

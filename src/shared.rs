@@ -34,6 +34,7 @@ pub struct Run {
     pub has_hotdog: bool,
     pub hotdog_eaten: bool,
     pub idle: f32,
+    pub look_idle: f32, // seconds since the player last moved the view
     pub dist_since_step: f32,
     pub step_flip: bool,
     pub heading: f32, // yaw deg; walking forward dir = (sin,0,cos)
@@ -64,6 +65,7 @@ impl Run {
             hotdog_spawned: false,
             hotdog_eaten: false,
             idle: 0.0,
+            look_idle: 0.0,
             dist_since_step: 0.0,
             step_flip: false,
             heading: 90.0,
