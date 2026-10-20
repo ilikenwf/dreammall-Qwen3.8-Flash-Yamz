@@ -490,13 +490,13 @@ pub fn void_frame(seed: u64, t: f32) -> Rgba {
         let v = (y as f32 + 0.5) / h as f32;
         let d = 1.0 - v;
         // vortex glow: tight around the nadir, fading out by the horizon
-        let glow = (-d * 3.4).exp();
+        let glow = (-d * 1.7).exp();
         // bright event-horizon ring, breathing twice per loop
         let ring = (-((d - 0.16) * 13.0).powi(2)).exp()
             * (0.6 + 0.4 * (ta * 2.0 + d * 9.0).sin());
         // spiral value ramp + additive weight; whole spiral rotates once per loop
-        let val = (glow * 1.25 + ring * 0.55).clamp(0.0, 1.0);
-        let add = (glow * 1.4 + ring * 0.5).min(1.0);
+        let val = (glow * 1.35 + ring * 0.6).clamp(0.0, 1.0);
+        let add = (glow * 1.6 + ring * 0.55).min(1.0);
         for x in 0..w {
             let u = (x as f32 + 0.5) / w as f32;
             // 3 rainbow arms around the pole, 4 hue bands pole-to-horizon; hue is
@@ -505,9 +505,12 @@ pub fn void_frame(seed: u64, t: f32) -> Rgba {
             let hue = (3.0 * u + 4.0 * d).fract();
             let [vr, vg, vb] = hsv(hue, 0.85, val);
             // dark purple-black void, slightly brighter toward the vortex
-            let mut r = 6.0 + 20.0 * glow * glow;
-            let mut g = 3.0 + 4.0 * glow * glow;
-            let mut bl = 14.0 + 26.0 * glow * glow;
+            // purple-blue void that stays visibly psychedelic down to the
+            // horizon: the atrium glass looks through this band, and a near
+            // black horizon reads as a dark panel from inside the mall
+            let mut r = 22.0 + 26.0 * glow * glow;
+            let mut g = 10.0 + 7.0 * glow * glow;
+            let mut bl = 44.0 + 38.0 * glow * glow;
             r += vr as f32 * add;
             g += vg as f32 * add;
             bl += vb as f32 * add;

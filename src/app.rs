@@ -99,7 +99,10 @@ fn build_mats(
             base_color: Color::srgba(0.75, 0.85, 0.95, 0.12),
             perceptual_roughness: 0.08,
             alpha_mode: AlphaMode::Blend,
-            emissive: LinearRgba::new(0.03, 0.045, 0.07, 1.0),
+            // faint cool self-glow so the panel never reads as a black box,
+            // and no fog tint: DistanceFog would darken it against the void
+            emissive: LinearRgba::new(0.05, 0.07, 0.11, 1.0),
+            fog_enabled: false,
             ..default()
         },
     );
@@ -568,6 +571,13 @@ fn build_pending(
                     Cam,
                     Camera3d::default(),
                     DistanceFog::default(),
+                    // dim dream-ambient: surfaces beyond the point-light
+                    // falloff still read as dim walls, not pitch-black void
+                    AmbientLight {
+                        color: Color::srgb(0.55, 0.45, 0.75),
+                        brightness: 55.0,
+                        affects_lightmapped_meshes: false,
+                    },
                     bevy::camera::visibility::NoCpuCulling,
                 )],
             ));

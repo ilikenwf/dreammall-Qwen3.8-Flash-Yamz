@@ -109,32 +109,45 @@ fn band_mesh(a0: f32, a1: f32, r0: f32, r1: f32, y: f32, segments: usize) -> Mes
     m
 }
 
-/// vertical wall band: same as band but extruded 0..h, normal horizontal
+/// vertical wall band: extruded 0..h, emitted twice (outward + inward
+/// facing) with explicit radial normals so it renders correctly from both
+/// the corridor and the void side.
 fn wall_band(a0: f32, a1: f32, r: f32, h: f32, segments: usize) -> Mesh {
     let mut pos = Vec::new();
     let mut uv = Vec::new();
+    let mut nrm = Vec::new();
     let mut idx: Vec<u32> = Vec::new();
-    for s in 0..=segments {
-        let t = a0 + (a1 - a0) * s as f32 / segments as f32;
-        let (sn, cs) = (t.to_radians().sin(), t.to_radians().cos());
-        pos.push([r * sn, 0.0, r * cs]);
-        pos.push([r * sn, h, r * cs]);
-        let u = s as f32 / segments as f32;
-        uv.push([u * 10.0, 0.0]);
-        uv.push([u * 10.0, h / 2.0]);
-    }
-    for s in 0..segments as u32 {
-        let a = s * 2;
-        idx.extend_from_slice(&[a, a + 2, a + 1, a + 1, a + 2, a + 3]);
+    for side in 0..2u32 {
+        let ns = if side == 0 { 1.0 } else { -1.0 };
+        let base = pos.len() as u32;
+        for s in 0..=segments {
+            let t = a0 + (a1 - a0) * s as f32 / segments as f32;
+            let (sn, cs) = (t.to_radians().sin(), t.to_radians().cos());
+            pos.push([r * sn, 0.0, r * cs]);
+            pos.push([r * sn, h, r * cs]);
+            let u = s as f32 / segments as f32;
+            uv.push([u * 10.0, 0.0]);
+            uv.push([u * 10.0, h / 2.0]);
+            nrm.push([ns * sn, 0.0, ns * cs]);
+            nrm.push([ns * sn, 0.0, ns * cs]);
+        }
+        for s in 0..segments as u32 {
+            let a = base + s * 2;
+            if side == 0 {
+                idx.extend_from_slice(&[a, a + 2, a + 1, a + 1, a + 2, a + 3]);
+            } else {
+                idx.extend_from_slice(&[a, a + 1, a + 2, a + 1, a + 3, a + 2]);
+            }
+        }
     }
     let mut m = Mesh::new(
         bevy::mesh::PrimitiveTopology::TriangleList,
         RenderAssetUsages::RENDER_WORLD,
     );
     m.insert_attribute(Mesh::ATTRIBUTE_POSITION, pos);
+    m.insert_attribute(Mesh::ATTRIBUTE_NORMAL, nrm);
     m.insert_attribute(Mesh::ATTRIBUTE_UV_0, uv);
     m.insert_indices(bevy::mesh::Indices::U32(idx));
-    m.compute_normals();
     m
 }
 
@@ -783,6 +796,41 @@ fn spawn_atrium(
             .id();
         commands.entity(sec).add_child(fs);
     }
+    // escalators drifting in the void beyond the glass: the mall staple,
+    // descending into nowhere. Decorative, unreachable, no obstacles.
+    for s in 0..3u64 {
+        let h = hash2(seed, i as u64 * 77 + s + 500);
+        let r = 17.0 + (h % 1000) as f32 / 1000.0 * 7.0;
+        let off = -14.0 + (h % 2800) as f32 / 2800.0 * 28.0;
+        let yaw = ((h >> 11) % 360) as f32;
+        let pitch = -18.0 - ((h >> 23) % 24) as f32;
+        let esc = commands
+            .spawn((
+                Sec(i),
+                Mesh3d(meshes.add(box_m(1.9, 0.35, 11.0))),
+                MeshMaterial3d(mats.glow.clone()),
+                Transform {
+                    translation: local_arc(off, r, 3.0 + ((h >> 33) % 400) as f32 / 100.0),
+                    rotation: Quat::from_rotation_y(yaw.to_radians())
+                        * Quat::from_rotation_x(pitch.to_radians()),
+                    ..default()
+                },
+            ))
+            .id();
+        // glowing handrail strips so the silhouette reads in the dark
+        for side in [-0.85f32, 0.85] {
+            let rail = commands
+                .spawn((
+                    Sec(i),
+                    Mesh3d(meshes.add(box_m(0.16, 0.5, 11.0))),
+                    MeshMaterial3d(mats.strip.clone()),
+                    Transform::from_xyz(side, 0.4, 0.0),
+                ))
+                .id();
+            commands.entity(esc).add_child(rail);
+        }
+        commands.entity(sec).add_child(esc);
+    }
     // a couple of benches and a mirror for life
     let b = commands
         .spawn((
@@ -875,9 +923,14 @@ mod winding_tests {
         assert!(n[0][1] > 0.5, "floor normal should point up, got {:?}", n[0]);
     }
     #[test]
-    fn wall_normals_radial() {
+    fn wall_normals_double_sided() {
         let m = wall_band(-18.0, 18.0, 46.0, 4.0, 8);
         let n = normals(&m);
-        println!("wall normal[0] = {:?}", n[0]);
+        let (sn, cs) = (-18f32).to_radians().sin_cos();
+        let out = [sn, 0.0, cs];
+        let dot = |a: &[f32; 3]| a[0] * out[0] + a[1] * out[1] + a[2] * out[2];
+        assert!(dot(&n[0]) > 0.99, "side 0 normal should face outward, got {:?}", n[0]);
+        let inner0 = (8 + 1) * 2;
+        assert!(dot(&n[inner0]) < -0.99, "side 1 normal should face inward, got {:?}", n[inner0]);
     }
 }
