@@ -663,6 +663,7 @@ fn player_input(
     _sfx: Res<Sfx>,
     mut commands: Commands,
     obstacles: Res<Obstacles>,
+    fountains: Query<&Fountain>,
 ) {
     let dt = time.delta_secs().min(0.05);
     run.clock += dt;
@@ -839,6 +840,17 @@ fn player_input(
         }
         if vel.length_squared() > 0.0 {
             tf.translation += vel.normalize() * 6.5 * dt;
+        }
+        // floor: the mall floor is one-way for the diver. Below the mall the
+        // single-sided geometry vanishes and you drift in the void forever, so
+        // the only permitted descent to the water is directly over a fountain
+        // (the dive-win spot). Everywhere else eye height is the hard floor.
+        let over_fountain = fountains
+            .iter()
+            .any(|f| Vec2::new(f.center.x - tf.translation.x, f.center.z - tf.translation.z).length() < 3.4);
+        let floor_y = if over_fountain { 0.25 } else { 1.7 };
+        if tf.translation.y < floor_y {
+            tf.translation.y = floor_y;
         }
         if keys.pressed(KeyCode::KeyQ) {
             run.roll += 60.0 * dt;

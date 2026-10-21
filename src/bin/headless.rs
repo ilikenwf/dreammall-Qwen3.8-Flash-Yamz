@@ -131,6 +131,10 @@ fn driver(world: &mut World) {
     }
     let phase = S.with(|s| s.borrow().phase);
 
+    if phase >= 30 {
+        fall(world, n, phase);
+        return;
+    }
     if phase >= 20 {
         flight(world, n, phase);
         return;
@@ -145,6 +149,13 @@ fn driver(world: &mut World) {
                 run.mutate_flag = true;
             }
             S.with(|s| s.borrow_mut().phase = 20);
+        }
+        // ---------- FALL-GUARD MODE: separate scripted run ----------
+        0 if std::env::var("DREAMMALL_FALL").is_ok() => {
+            // enter flight directly: the fall-guard regression only needs
+            // 6DOF mode, not the hotdog chain (covered by the flight run)
+            world.resource_mut::<Run>().mode = Mode::Flying;
+            S.with(|s| s.borrow_mut().phase = 30);
         }
         // ---------- RUN 1: clean start ----------
         0 => {
@@ -514,6 +525,90 @@ fn flight(world: &mut World, n: u32, phase: u32) {
                 }
             }
             pass("FLIGHT RUN OK");
+            println!("ALL CHECKS PASSED");
+            let _ = std::io::Write::flush(&mut std::io::stdout());
+            hard_exit(0);
+        }
+        _ => {}
+    }
+}
+
+/// scripted fall-guard run (DREAMMALL_FALL=1): entering flight and holding
+/// Shift away from any fountain must NOT sink through the mall floor (the
+/// void-sphere screenshot bug); diving directly over a fountain must still
+/// land in the water and win Water.
+fn fall(world: &mut World, n: u32, phase: u32) {
+    match phase {
+        30 => {
+            if world.resource::<Run>().mode != Mode::Flying {
+                if n > 120 {
+                    fail("never entered flight (fall run)");
+                }
+                return;
+            }
+            pass("entered flight (fall run)");
+            // park on the corridor midline 60 deg around the ring from the
+            // first fountain: far outside every fountain dive radius
+            let c = fountain_center(world);
+            let ca = c.x.atan2(c.z).to_degrees();
+            let (x, z) = dreammall::game::arc_point(ca + 60.0, dreammall::game::R_MID);
+            teleport(world, Vec3::new(x, EYE_H, z));
+            world
+                .resource_mut::<ButtonInput<KeyCode>>()
+                .press(KeyCode::ShiftLeft);
+            S.with(|s| s.borrow_mut().phase = 31);
+        }
+        31 => {
+            let p = world
+                .query_filtered::<&Transform, With<Player>>()
+                .single(world)
+                .expect("player")
+                .translation;
+            if p.y < 1.7 - 1e-3 {
+                fail(&format!("fell through the mall floor: y = {}", p.y));
+            }
+            if n > 300 {
+                pass("floor holds the diver (y clamped at eye height)");
+                world
+                    .resource_mut::<ButtonInput<KeyCode>>()
+                    .release(KeyCode::ShiftLeft);
+                let c = fountain_center(world);
+                teleport(world, Vec3::new(c.x, 20.0, c.z));
+                world
+                    .resource_mut::<ButtonInput<KeyCode>>()
+                    .press(KeyCode::ShiftLeft);
+                S.with(|s| s.borrow_mut().phase = 32);
+            }
+        }
+        32 => {
+            match world.resource::<Run>().won {
+                Some(WinKind::Water) => pass("fountain dive still wins (Water)"),
+                Some(w) => fail(&format!("wrong win kind on dive: {w:?}")),
+                None => {
+                    let p = world
+                        .query_filtered::<&Transform, With<Player>>()
+                        .single(world)
+                        .expect("player")
+                        .translation;
+                    if p.y < 0.249 {
+                        fail(&format!("sank below the water surface: y = {}", p.y));
+                    }
+                    if n > 600 {
+                        fail("fountain dive never won (fall run)");
+                    }
+                    return;
+                }
+            }
+            S.with(|s| s.borrow_mut().phase = 33);
+        }
+        33 => {
+            if *world.resource::<State<GS>>().get() != GS::Ended {
+                if n > 1800 {
+                    fail("ending state never entered (fall run)");
+                }
+                return;
+            }
+            pass("FALL-GUARD RUN OK");
             println!("ALL CHECKS PASSED");
             let _ = std::io::Write::flush(&mut std::io::stdout());
             hard_exit(0);

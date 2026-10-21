@@ -26,6 +26,10 @@
 - Headless driver supports `DREAMMALL_FLIGHT=1` (second process run): scripted
   hotdog take -> eat -> flight -> rise-past-roof win -> Flight ending. Water
   run remains the default (penny -> fountain dive -> Water ending).
+- `DREAMMALL_FALL=1` (third run): fall-guard regression. Hold SHIFT in flight
+  away from fountains -> must NOT sink through the one-way floor (was the
+  "void everywhere" screenshot bug: camera under the single-sided floor);
+  dive directly over a fountain -> still wins Water.
 
 ## Debug env hooks (stripped before shipping)
 - `DREAMMALL_SPAWN=x,z`, `DREAMMALL_PASS=1`, `DREAMMALL_SHOT=path:secs`
