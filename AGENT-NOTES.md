@@ -30,6 +30,12 @@
 ## Debug env hooks (stripped before shipping)
 - `DREAMMALL_SPAWN=x,z`, `DREAMMALL_PASS=1`, `DREAMMALL_SHOT=path:secs`
   existed for headless testing; removed from shipping code.
+- README screenshots are retaken with the `headless` test binary's shot
+  mode (NOT in shipping code): `DREAMMALL_SHOT=path:x,z:heading:secs`
+  teleports the player, then takes a GPU-side swapchain capture (Bevy
+  Screenshot + save_to_disk observer). Run under Xvfb sized exactly to
+  the target art (1600x900). The target directory must pre-exist;
+  save_to_disk fails silently otherwise.
 
 ## Dark-band complaint (4K laptop)
 - Two causes. (1) Capture artifact in our own Xvfb runs: the game window is

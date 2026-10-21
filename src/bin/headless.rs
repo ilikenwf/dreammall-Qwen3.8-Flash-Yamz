@@ -123,7 +123,14 @@ fn driver(world: &mut World) {
         fail("frame budget exhausted");
     }
 
+    // shot mode: teleport + settle + GPU-side swapchain capture for README
+    // art; never runs unless DREAMMALL_SHOT is set
+    if std::env::var("DREAMMALL_SHOT").is_ok() {
+        shot(world, n);
+        return;
+    }
     let phase = S.with(|s| s.borrow().phase);
+
     if phase >= 20 {
         flight(world, n, phase);
         return;
@@ -515,10 +522,52 @@ fn flight(world: &mut World, n: u32, phase: u32) {
     }
 }
 
+
+/// README screenshot mode: teleport to a framing, let the fade-in settle,
+/// then take a GPU-side swapchain capture (bypasses X root capture, which
+/// would include the black desktop outside the window).
+/// DREAMMALL_SHOT=path.png:x,z:heading_deg:secs
+fn shot(world: &mut World, n: u32) {
+    if S.with(|s| s.borrow().phase) == 999 {
+        if n >= S.with(|s| s.borrow().settle) {
+            pass("shot captured");
+            println!("ALL CHECKS PASSED");
+            hard_exit(0);
+        }
+        return;
+    }
+    let spec = std::env::var("DREAMMALL_SHOT").unwrap_or_default();
+    let mut it = spec.split(':');
+    let _ = it.next(); // path handled by the save_to_disk observer
+    let xy: Vec<f32> = it
+        .next()
+        .unwrap_or("0,43")
+        .split(',')
+        .filter_map(|s| s.parse().ok())
+        .collect();
+    let head: f32 = it.next().and_then(|s| s.parse().ok()).unwrap_or(90.0);
+    let secs: f32 = it.next().and_then(|s| s.parse().ok()).unwrap_or(3.0);
+    if n == 2 && xy.len() == 2 {
+        teleport(world, Vec3::new(xy[0], EYE_H, xy[1]));
+        world.resource_mut::<Run>().heading = head;
+    }
+    if world.resource::<Time>().elapsed_secs() >= secs {
+        world.spawn(bevy::render::view::window::screenshot::Screenshot::primary_window());
+        S.with(|s| {
+            let mut s = s.borrow_mut();
+            s.phase = 999;
+            s.settle = n + 30;
+        });
+    }
+}
 fn main() {
     let mut app = App::new();
     dreammall::app::build(&mut app);
     // after input so manual presses land next frame, deterministic ordering
     app.add_systems(PreUpdate, driver.after(InputSystems));
+    if let Ok(spec) = std::env::var("DREAMMALL_SHOT") {
+        let path = spec.split(':').next().unwrap_or("shot.png").to_string();
+        app.add_observer(bevy::render::view::window::screenshot::save_to_disk(path));
+    }
     app.run();
 }
