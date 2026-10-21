@@ -413,18 +413,24 @@ pub fn nyancat() -> Rgba {
     b
 }
 
-// ---- radial vignette: transparent center -> dark edges (UI overlay) ----
+// ---- radial vignette: gentle darkening over the WHOLE frame ----
+// an inner fully-transparent plateau made the clear/dark boundary read as a
+// soft square floating in the FOV; instead ramp smoothly from a faint
+// center tint to a moderate corner darkening, normalized so corners hit max
 pub fn vignette() -> Rgba {
     let w = 256u32;
     let h = 256u32;
     let mut b = new_buf(w, h, [0, 0, 0, 0]);
+    let max_d = (2.0f32).sqrt();
     for y in 0..h {
         for x in 0..w {
             let dx = (x as f32 - w as f32 / 2.0) / (w as f32 / 2.0);
             let dy = (y as f32 - h as f32 / 2.0) / (h as f32 / 2.0);
-            let d = (dx * dx + dy * dy).sqrt();
-            let a = ((d - 0.55) / 0.65).clamp(0.0, 1.0);
-            put(&mut b, w, x, y, [10, 4, 18, (a * a * 200.0) as u8]);
+            let d = ((dx * dx + dy * dy).sqrt() / max_d).min(1.0);
+            // smooth full-frame ramp: 0% at center, ~19% at edge midpoints,
+            // ~43% at corners (alpha = a * 110)
+            let a = d * d * (0.55 + 0.45 * d);
+            put(&mut b, w, x, y, [10, 4, 18, (a * 110.0) as u8]);
         }
     }
     b
