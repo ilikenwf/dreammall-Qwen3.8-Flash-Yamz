@@ -2,3 +2,4 @@
 assets_dbg
 *.png
 !docs/*.png
+!screenshots/*.png
