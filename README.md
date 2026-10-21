@@ -6,6 +6,23 @@ The mall loops. The mall remembers.
 
 Rust + [Bevy](https://bevyengine.org). Runs on Linux, Mac, and Windows.
 
+## Screenshots
+
+The fountain court — your landmark and one of the two ways out — under the
+void sky:
+
+![fountain court](screenshots/fountain.png)
+
+The atrium: mall glass, and past it a slowly churning psychedelic
+singularity:
+
+![atrium void](screenshots/atrium-void.png)
+
+Walking the ring — storefronts, ads, and props you cannot walk backward away
+from:
+
+![corridor](screenshots/corridor.png)
+
 ## Build & run
 
 ```sh
