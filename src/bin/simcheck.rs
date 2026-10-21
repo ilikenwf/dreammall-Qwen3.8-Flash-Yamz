@@ -62,7 +62,7 @@ fn main() {
         ("sunset", texturegen::sunset(1)),
         ("brick", texturegen::brick(1)),
         ("nyancat", texturegen::nyancat()),
-        ("vignette", texturegen::vignette()),
+        ("vignette", texturegen::vignette(16.0 / 9.0)),
         ("water", texturegen::water(1)),
     ];
     for (name, buf) in &tex {
