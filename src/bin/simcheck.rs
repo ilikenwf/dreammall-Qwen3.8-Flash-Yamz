@@ -55,14 +55,13 @@ fn main() {
     }));
 
     // ---- textures ----
-    let tex: [(&str, texturegen::Rgba); 8] = [
+    let tex: [(&str, texturegen::Rgba); 7] = [
         ("floor_tile", texturegen::floor_tile(1)),
         ("wall_tile", texturegen::wall_tile(1, 0.1)),
         ("ceil_tile", texturegen::ceil_tile(1)),
         ("sunset", texturegen::sunset(1)),
         ("brick", texturegen::brick(1)),
         ("nyancat", texturegen::nyancat()),
-        ("vignette", texturegen::vignette(16.0 / 9.0)),
         ("water", texturegen::water(1)),
     ];
     for (name, buf) in &tex {

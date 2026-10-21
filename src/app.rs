@@ -439,11 +439,10 @@ fn setup_dream(
         seed,
         sky.as_deref(),
     );
-    spawn_ui_root(&mut commands, &mut images);
+    spawn_ui_root(&mut commands);
 }
 
-fn spawn_ui_root(commands: &mut Commands, images: &mut ResMut<Assets<Image>>) {
-    let vig = world::tex_rgba(images, 256, 256, texturegen::vignette(16.0 / 9.0), true);
+fn spawn_ui_root(commands: &mut Commands) {
     commands
         .spawn(Node {
             position_type: PositionType::Absolute,
@@ -453,21 +452,6 @@ fn spawn_ui_root(commands: &mut Commands, images: &mut ResMut<Assets<Image>>) {
         })
         .insert(Pickable::IGNORE)
         .with_children(|ui| {
-            // vignette overlay
-            ui.spawn((
-                ImageNode {
-                    image: vig,
-                    ..default()
-                },
-                VignetteNode,
-                Node {
-                    position_type: PositionType::Absolute,
-                    width: Val::Percent(100.0),
-                    height: Val::Percent(100.0),
-                    ..default()
-                },
-                FocusPolicy::Pass,
-            ));
             // black fade overlay
             ui.spawn((
                 Name::new("fade"),
@@ -549,30 +533,6 @@ fn spawn_ui_root(commands: &mut Commands, images: &mut ResMut<Assets<Image>>) {
         });
 }
 
-// keep the vignette circular on screen: regenerate its gradient texture
-// with the current window aspect whenever the window resizes, so no
-// elliptical iso-darkness arc can read as a panel edge in the FOV
-fn vignette_fit(
-    windows: Query<&Window, With<PrimaryWindow>>,
-    mut images: ResMut<Assets<Image>>,
-    mut vig: Query<&mut ImageNode, With<VignetteNode>>,
-    mut last: Local<f32>,
-) {
-    let Ok(win) = windows.single() else { return };
-    let h = win.height();
-    if h <= 1.0 {
-        return;
-    }
-    let aspect = win.width() / h;
-    if (aspect - *last).abs() < 0.01 {
-        return;
-    }
-    *last = aspect;
-    let tex = world::tex_rgba(&mut images, 256, 256, texturegen::vignette(aspect), true);
-    for mut node in &mut vig {
-        node.image = tex.clone();
-    }
-}
 
 /// build/rebuild the world when NewDream is pending
 fn build_pending(
@@ -1136,8 +1096,6 @@ fn fade_apply(run: Res<Run>, mut q: Query<&mut BackgroundColor, With<FadeNode>>)
 
 #[derive(Component)]
 struct FadeNode;
-#[derive(Component)]
-struct VignetteNode;
 
 // ---------------------------------------------------------------- mutation ----
 
@@ -1592,7 +1550,6 @@ pub fn build(app: &mut App) {
     app.add_systems(Update, cursor_ctrl.run_if(resource_exists::<Run>));
     app.add_systems(Update, fullscreen_toggle.run_if(resource_exists::<Run>));
     app.add_systems(Update, start_maximized.run_if(resource_exists::<Run>));
-    app.add_systems(Update, vignette_fit.run_if(resource_exists::<Run>));
     app.add_systems(OnEnter(GS::Ended), (capture_win2, spawn_ending_ui, clear_hud_on_end));
     // ending screen: Escape quits
     app.add_systems(Update, exit_on_escape.run_if(in_state(GS::Ended)));

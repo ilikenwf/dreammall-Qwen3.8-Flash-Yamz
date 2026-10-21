@@ -30,6 +30,13 @@
   away from fountains -> must NOT sink through the one-way floor (was the
   "void everywhere" screenshot bug: camera under the single-sided floor);
   dive directly over a fountain -> still wins Water.
+- The UI vignette overlay is REMOVED entirely (was a full-screen
+  ImageNode gradient). Matt kept reading its residual edge darkness as a
+  "black frame in the middle" even after the aspect-correction fix;
+  with the corners flattened, the remaining ~17% edge-midpoint alpha is
+  exactly that frame. Fog + ambient already carry the mood, so the
+  overlay is dead weight. `texturegen::vignette` deleted with it;
+  README screenshots retaken without it.
 
 ## Debug env hooks (stripped before shipping)
 - `DREAMMALL_SPAWN=x,z`, `DREAMMALL_PASS=1`, `DREAMMALL_SHOT=path:secs`
