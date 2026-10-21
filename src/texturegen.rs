@@ -414,23 +414,24 @@ pub fn nyancat() -> Rgba {
 }
 
 // ---- radial vignette: gentle darkening over the WHOLE frame ----
-// an inner fully-transparent plateau made the clear/dark boundary read as a
-// soft square floating in the FOV; instead ramp smoothly from a faint
-// center tint to a moderate corner darkening, normalized so corners hit max
-pub fn vignette() -> Rgba {
+// aspect-corrected so iso-darkness contours are CIRCLES on screen: a
+// circular texture stretched onto a 16:9 node produces elliptical arcs
+// that read as a panel edge floating in the FOV. ramp: 0% at center,
+// ~17% at edge midpoints, ~41% at corners (alpha = a * 110), no plateau.
+pub fn vignette(aspect: f32) -> Rgba {
     let w = 256u32;
     let h = 256u32;
     let mut b = new_buf(w, h, [0, 0, 0, 0]);
-    let max_d = (2.0f32).sqrt();
+    let a = aspect.max(0.01);
+    // corner distance in this metric, so corners always land on ramp max
+    let max_d = (a * a + 1.0).sqrt();
     for y in 0..h {
         for x in 0..w {
-            let dx = (x as f32 - w as f32 / 2.0) / (w as f32 / 2.0);
+            let dx = (x as f32 - w as f32 / 2.0) / (w as f32 / 2.0) * a;
             let dy = (y as f32 - h as f32 / 2.0) / (h as f32 / 2.0);
             let d = ((dx * dx + dy * dy).sqrt() / max_d).min(1.0);
-            // smooth full-frame ramp: 0% at center, ~19% at edge midpoints,
-            // ~43% at corners (alpha = a * 110)
-            let a = d * d * (0.55 + 0.45 * d);
-            put(&mut b, w, x, y, [10, 4, 18, (a * 110.0) as u8]);
+            let t = d * d * (0.55 + 0.45 * d);
+            put(&mut b, w, x, y, [10, 4, 18, (t * 110.0) as u8]);
         }
     }
     b
@@ -577,7 +578,7 @@ mod tests {
         assert_eq!(sign_tex(1, "MOON MART").len(), 256 * 64 * 4);
         assert_eq!(brick(1).len(), 256 * 256 * 4);
         assert_eq!(nyancat().len(), 120 * 40 * 4);
-        assert_eq!(vignette().len(), 256 * 256 * 4);
+        assert_eq!(vignette(16.0 / 9.0).len(), 256 * 256 * 4);
         assert_eq!(water(1).len(), 128 * 128 * 4);
     }
 
@@ -612,6 +613,23 @@ mod tests {
             top += lum(x, 0);
         }
         assert!(bot > top * 4, "vortex {bot} vs zenith {top}");
+    }
+
+    #[test]
+    fn vignette_circular_on_screen() {
+        // stretched to a 1600x900 window, two texels whose screen-space
+        // offsets from center have equal pixel distance must share alpha;
+        // iso-alpha ellipses are what read as a floating panel edge
+        let b = vignette(16.0 / 9.0);
+        let a = |x: u32, y: u32| -> i32 {
+            b[((y * 256 + x) * 4 + 3) as usize] as i32
+        };
+        // r=300px along -x, and r=300px along the +45 deg diagonal
+        let ax = a(80, 128); // screen (-300, 0)
+        let bx = a(162, 188); // screen (+212, +212)
+        assert!((ax - bx).abs() <= 2, "iso-radius alphas differ: {ax} vs {bx}");
+        assert_eq!(a(128, 128), 0, "center must be clear");
+        assert!(a(0, 0) >= 105, "corner must reach ramp max, got {}", a(0, 0));
     }
 
 }
